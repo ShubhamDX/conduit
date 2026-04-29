@@ -6,3 +6,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
+conduit-adapter-codex = { path = "../conduit-adapter-codex" }
+conduit-core = { path = "../conduit-core" }
+conduit-security = { path = "../conduit-security" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
