@@ -1,9 +1,9 @@
 //! Conduit orchestration loop.
 
 use conduit_adapter_registry::AdapterRegistry;
-use conduit_core::adapter::{ApprovalMode, SecurityPolicy, StartRequest};
+use conduit_core::adapter::{ApprovalMode, MemoryCapability, SecurityPolicy, StartRequest};
 use conduit_core::event::AgentEvent;
-use conduit_memory::{MemoryEntry, MemoryError, MemoryQuery, MemorySnapshot, MemoryStore};
+use conduit_memory::{MemoryEntry, MemoryError, MemoryStore};
 use conduit_security::redact::redact;
 use conduit_tracker::Issue;
 use conduit_tracker::{Tracker, TrackerError};
@@ -14,7 +14,7 @@ use thiserror::Error;
 
 pub mod config;
 
-const DEFAULT_MEMORY_LIMIT: usize = 12;
+const MEMORY_TOOLS: &[&str] = &["memory_search", "memory_get", "memory_upsert"];
 
 #[derive(Debug, Error)]
 pub enum OrchError {
@@ -51,14 +51,15 @@ pub async fn run_one_issue(
 
     let adapter = registry.route(&issue.labels)?;
     tracker.set_state(issue_id, "in_progress").await?;
-    let memory_snapshot = load_memory(config, &issue.labels).await?;
+    let memory_capability = memory_capability(config, issue_id, &issue.labels);
 
     let request = StartRequest {
         workspace: config.workspace.clone(),
-        prompt: build_prompt(&issue, &memory_snapshot),
+        prompt: build_prompt(&issue, memory_capability.as_ref()),
         model: None,
         approval_mode: ApprovalMode::OnWrite,
         security_policy: config.default_policy.clone(),
+        memory: memory_capability,
         env: HashMap::new(),
     };
     let mut handle = adapter.start_session(request).await?;
@@ -86,19 +87,23 @@ pub async fn run_one_issue(
     Ok(())
 }
 
-async fn load_memory(
+fn memory_capability(
     config: &OrchestratorConfig,
+    issue_id: &str,
     tags: &[String],
-) -> Result<MemorySnapshot, OrchError> {
-    match &config.shared_memory {
-        Some(memory) => Ok(memory
-            .load(MemoryQuery {
-                tags: tags.to_vec(),
-                limit: DEFAULT_MEMORY_LIMIT,
-            })
-            .await?),
-        None => Ok(MemorySnapshot::default()),
+) -> Option<MemoryCapability> {
+    if config.shared_memory.is_none() {
+        return None;
     }
+
+    Some(MemoryCapability {
+        scope: format!("issue:{issue_id}"),
+        tags: tags.to_vec(),
+        tools: MEMORY_TOOLS
+            .iter()
+            .map(|tool| (*tool).to_string())
+            .collect(),
+    })
 }
 
 async fn write_memory(
@@ -121,18 +126,22 @@ async fn write_memory(
     Ok(())
 }
 
-fn build_prompt(issue: &Issue, memory: &MemorySnapshot) -> String {
+fn build_prompt(issue: &Issue, memory: Option<&MemoryCapability>) -> String {
     let issue_prompt = format!("{}\n\n{}", issue.title, issue.body);
-    if memory.entries.is_empty() {
-        return issue_prompt;
+
+    match memory {
+        Some(memory) => format!(
+            "Shared memory is available by capability reference.\n\
+             Scope: {}\n\
+             Tags: {}\n\
+             Tools: {}\n\
+             Use memory tools only when extra context is needed; do not assume memory contents are already in this prompt.\n\n\
+             Current issue:\n{}",
+            memory.scope,
+            memory.tags.join(", "),
+            memory.tools.join(", "),
+            issue_prompt
+        ),
+        None => issue_prompt,
     }
-
-    let memory_block = memory
-        .entries
-        .iter()
-        .map(|entry| format!("- [{}] {}", entry.key, redact(&entry.value)))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    format!("Shared memory:\n{memory_block}\n\nCurrent issue:\n{issue_prompt}")
 }

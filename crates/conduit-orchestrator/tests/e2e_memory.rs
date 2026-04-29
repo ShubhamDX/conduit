@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 
 struct PromptCaptureAgent {
     seen_prompt: Arc<Mutex<Option<String>>>,
+    seen_memory_scope: Arc<Mutex<Option<String>>>,
 }
 
 #[async_trait]
@@ -21,6 +22,7 @@ impl AgentAdapter for PromptCaptureAgent {
     }
 
     async fn start_session(&self, request: StartRequest) -> Result<SessionHandle, AdapterError> {
+        *self.seen_memory_scope.lock().await = request.memory.map(|memory| memory.scope);
         *self.seen_prompt.lock().await = Some(request.prompt);
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {
@@ -82,7 +84,7 @@ impl AgentAdapter for SecretAgent {
 }
 
 #[tokio::test]
-async fn injects_matching_shared_memory_into_prompt() {
+async fn shares_memory_reference_without_injecting_contents() {
     let memory = Arc::new(InMemoryStore::new());
     memory
         .upsert(MemoryEntry {
@@ -94,10 +96,12 @@ async fn injects_matching_shared_memory_into_prompt() {
         .await
         .unwrap();
     let seen_prompt = Arc::new(Mutex::new(None));
+    let seen_memory_scope = Arc::new(Mutex::new(None));
     let tracker = tracker();
     let mut registry = AdapterRegistry::new();
     registry.insert(Box::new(PromptCaptureAgent {
         seen_prompt: Arc::clone(&seen_prompt),
+        seen_memory_scope: Arc::clone(&seen_memory_scope),
     }));
     registry.set_default("codex");
     let shared_memory: Arc<dyn MemoryStore> = memory;
@@ -113,9 +117,16 @@ async fn injects_matching_shared_memory_into_prompt() {
         .unwrap();
 
     let prompt = seen_prompt.lock().await.clone().unwrap();
-    assert!(prompt.contains("Shared memory:"));
-    assert!(prompt.contains("prior decision: use the registry route"));
+    assert!(prompt.contains("Shared memory is available by capability reference."));
+    assert!(prompt.contains("Scope: issue:I1"));
+    assert!(prompt.contains("Tags: agent:codex"));
+    assert!(prompt.contains("memory_search"));
+    assert!(!prompt.contains("prior decision: use the registry route"));
     assert!(prompt.contains("Current issue:"));
+    assert_eq!(
+        seen_memory_scope.lock().await.clone(),
+        Some("issue:I1".to_string())
+    );
 }
 
 #[tokio::test]

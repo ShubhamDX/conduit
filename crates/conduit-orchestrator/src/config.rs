@@ -8,7 +8,15 @@ pub struct Workflow {
     pub assignee: String,
     pub default_agent: String,
     pub security: SecurityPolicy,
+    #[serde(default)]
+    pub memory: Option<MemoryConfig>,
     pub agents: Vec<AgentSpec>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct MemoryConfig {
+    pub kind: String,
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -51,6 +59,9 @@ security:
   max_cpu_secs: 600
   redact_secrets: true
   workspace_writable: true
+memory:
+  kind: sqlite
+  path: ".conduit/memory.db"
 agents:
   - name: codex
     kind: codex
@@ -67,5 +78,6 @@ agents:
         assert_eq!(workflow.default_agent, "codex");
         assert_eq!(workflow.agents.len(), 2);
         assert_eq!(workflow.security.egress_allowlist.len(), 2);
+        assert_eq!(workflow.memory.unwrap().kind, "sqlite");
     }
 }

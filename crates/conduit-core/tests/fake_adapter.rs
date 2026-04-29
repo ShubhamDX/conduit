@@ -41,6 +41,7 @@ async fn fake_emits_session_ended() {
         model: None,
         approval_mode: ApprovalMode::Never,
         security_policy: SecurityPolicy::default(),
+        memory: None,
         env: Default::default(),
     };
 

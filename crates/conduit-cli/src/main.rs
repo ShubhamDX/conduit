@@ -5,8 +5,12 @@ use conduit_adapter_codex::adapter::{CodexAdapter, CodexConfig};
 use conduit_adapter_registry::AdapterRegistry;
 use conduit_core::adapter::{AgentAdapter, SessionHandle, StartRequest};
 use conduit_core::error::AdapterError;
+use conduit_memory::sqlite::SqliteMemoryStore;
+use conduit_memory::MemoryStore;
 use conduit_orchestrator::config::{load_workflow, AgentSpec, Workflow};
 use conduit_orchestrator::{run_one_issue, OrchestratorConfig};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "conduit")]
@@ -112,13 +116,15 @@ async fn main() -> Result<()> {
         }
         Command::Run { workflow, issue } => {
             let yaml = std::fs::read_to_string(&workflow).context("read workflow")?;
+            let workflow_path = workflow;
             let workflow = load_workflow(&yaml).context("parse workflow")?;
             let registry = build_registry(&workflow);
+            let shared_memory = build_memory_store(&workflow, &workflow_path)?;
             let config = OrchestratorConfig {
                 workspace: workflow.workspace.clone(),
                 assignee: workflow.assignee.clone(),
                 default_policy: workflow.security.clone(),
-                shared_memory: None,
+                shared_memory,
             };
             let issue_id = issue.context("--issue required in v0.1")?;
             let tracker = conduit_tracker::fake::FakeTracker::with(Vec::new());
@@ -135,6 +141,36 @@ async fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn build_memory_store(
+    workflow: &Workflow,
+    workflow_path: &str,
+) -> Result<Option<Arc<dyn MemoryStore>>> {
+    let Some(memory) = &workflow.memory else {
+        return Ok(None);
+    };
+
+    match memory.kind.as_str() {
+        "sqlite" => {
+            let path = resolve_relative_to_workflow(workflow_path, &memory.path);
+            Ok(Some(Arc::new(
+                SqliteMemoryStore::open(path).context("open sqlite memory store")?,
+            )))
+        }
+        other => anyhow::bail!("unsupported memory kind: {other}"),
+    }
+}
+
+fn resolve_relative_to_workflow(workflow_path: &str, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    Path::new(workflow_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(path)
 }
 
 fn check_dep(binary: &str) {

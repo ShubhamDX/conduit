@@ -19,6 +19,7 @@ async fn emits_first_token_delta() {
         model: None,
         approval_mode: ApprovalMode::Never,
         security_policy: SecurityPolicy::default(),
+        memory: None,
         env: Default::default(),
     };
 

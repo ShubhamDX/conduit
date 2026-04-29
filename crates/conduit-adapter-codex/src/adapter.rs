@@ -45,6 +45,7 @@ impl AgentAdapter for CodexAdapter {
                     "prompt": req.prompt,
                     "model": req.model.clone().or(self.config.model.clone()),
                     "workspace": req.workspace.display().to_string(),
+                    "memory": req.memory,
                 }),
             )
             .await?;

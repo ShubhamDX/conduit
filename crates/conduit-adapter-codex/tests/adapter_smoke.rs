@@ -19,6 +19,7 @@ async fn start_session_returns_handle_with_events() {
         model: None,
         approval_mode: ApprovalMode::Never,
         security_policy: SecurityPolicy::default(),
+        memory: None,
         env: Default::default(),
     };
 

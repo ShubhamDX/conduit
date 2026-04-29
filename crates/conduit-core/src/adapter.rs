@@ -43,7 +43,15 @@ pub struct StartRequest {
     pub model: Option<String>,
     pub approval_mode: ApprovalMode,
     pub security_policy: SecurityPolicy,
+    pub memory: Option<MemoryCapability>,
     pub env: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryCapability {
+    pub scope: String,
+    pub tags: Vec<String>,
+    pub tools: Vec<String>,
 }
 
 pub struct SessionHandle {
