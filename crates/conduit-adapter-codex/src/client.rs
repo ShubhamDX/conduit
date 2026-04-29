@@ -1,5 +1,8 @@
 use crate::event_map::map_codex_event;
-use crate::protocol::{RpcError, RpcNotification, RpcRequest, RpcResponse};
+use crate::protocol::{
+    decode_incoming, IncomingRpcMessage, IncomingRpcRequest, RpcError, RpcRequest, RpcResponse,
+};
+use conduit_core::adapter::{MemoryToolError, MemoryToolProvider};
 use conduit_core::error::AdapterError;
 use conduit_core::event::AgentEvent;
 use std::collections::HashMap;
@@ -20,6 +23,14 @@ pub struct StdioClient {
 
 impl StdioClient {
     pub async fn spawn(program: &str, args: &[String]) -> Result<Self, AdapterError> {
+        Self::spawn_with_memory_tools(program, args, None).await
+    }
+
+    pub async fn spawn_with_memory_tools(
+        program: &str,
+        args: &[String],
+        memory_tools: Option<Arc<dyn MemoryToolProvider>>,
+    ) -> Result<Self, AdapterError> {
         let mut command = Command::new(program);
         command
             .args(args)
@@ -32,6 +43,7 @@ impl StdioClient {
             .stdin
             .take()
             .ok_or_else(|| AdapterError::Protocol("child stdin unavailable".into()))?;
+        let stdin = Arc::new(Mutex::new(stdin));
         let stdout = child
             .stdout
             .take()
@@ -42,21 +54,43 @@ impl StdioClient {
         let (events_tx, events_rx) = mpsc::channel::<AgentEvent>(64);
 
         let pending_reader = Arc::clone(&pending);
+        let stdin_reader = Arc::clone(&stdin);
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                if let Ok(message) = decode_incoming(&line) {
+                    match message {
+                        IncomingRpcMessage::Response(response) => {
+                            if let Some(tx) = pending_reader.lock().await.remove(&response.id) {
+                                let _ = tx.send(response);
+                                continue;
+                            }
+                        }
+                        IncomingRpcMessage::Notification(notification) => {
+                            if notification.method == "event" {
+                                if let Some(event) = map_codex_event(&notification.params) {
+                                    let _ = events_tx.send(event).await;
+                                }
+                            }
+                            continue;
+                        }
+                        IncomingRpcMessage::Request(request) => {
+                            handle_child_request(
+                                request,
+                                memory_tools.as_deref(),
+                                &stdin_reader,
+                                &events_tx,
+                            )
+                            .await;
+                            continue;
+                        }
+                    }
+                }
+
                 if let Ok(response) = serde_json::from_str::<RpcResponse>(&line) {
                     if let Some(tx) = pending_reader.lock().await.remove(&response.id) {
                         let _ = tx.send(response);
                         continue;
-                    }
-                }
-
-                if let Ok(notification) = serde_json::from_str::<RpcNotification>(&line) {
-                    if notification.method == "event" {
-                        if let Some(event) = map_codex_event(&notification.params) {
-                            let _ = events_tx.send(event).await;
-                        }
                     }
                 }
             }
@@ -76,7 +110,7 @@ impl StdioClient {
 
         Ok(Self {
             child,
-            stdin: Arc::new(Mutex::new(stdin)),
+            stdin,
             pending,
             events_rx,
             next_id: Arc::new(AtomicU64::new(1)),
@@ -141,5 +175,103 @@ impl StdioClient {
         });
 
         events_rx
+    }
+}
+
+async fn handle_child_request(
+    request: IncomingRpcRequest,
+    memory_tools: Option<&dyn MemoryToolProvider>,
+    stdin: &Arc<Mutex<ChildStdin>>,
+    events_tx: &mpsc::Sender<AgentEvent>,
+) {
+    let call_id = format!("jsonrpc:{}", request.id);
+    let _ = events_tx
+        .send(AgentEvent::ToolCallStarted {
+            call_id: call_id.clone(),
+            name: request.method.clone(),
+            args: request.params.clone(),
+        })
+        .await;
+
+    let result = match memory_tools {
+        Some(memory_tools) if is_memory_tool(&request.method) => {
+            memory_tools
+                .call(&request.method, request.params.clone())
+                .await
+        }
+        Some(_) => Err(MemoryToolError::unavailable(format!(
+            "unknown method: {}",
+            request.method
+        ))),
+        None => Err(MemoryToolError::unavailable(
+            "memory tools are not available for this session",
+        )),
+    };
+
+    match result {
+        Ok(result) => {
+            let output = serde_json::to_string(&result).unwrap_or_else(|_| String::new());
+            let _ = write_json_line(
+                stdin,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": request.id,
+                    "result": result,
+                }),
+            )
+            .await;
+            let _ = events_tx
+                .send(AgentEvent::ToolCallCompleted {
+                    call_id,
+                    ok: true,
+                    output,
+                })
+                .await;
+        }
+        Err(error) => {
+            let output = error.to_string();
+            let _ = write_json_line(
+                stdin,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": request.id,
+                    "error": {
+                        "code": json_rpc_error_code(&error),
+                        "message": error.message.clone(),
+                    },
+                }),
+            )
+            .await;
+            let _ = events_tx
+                .send(AgentEvent::ToolCallCompleted {
+                    call_id,
+                    ok: false,
+                    output,
+                })
+                .await;
+        }
+    }
+}
+
+async fn write_json_line(
+    stdin: &Arc<Mutex<ChildStdin>>,
+    value: serde_json::Value,
+) -> Result<(), std::io::Error> {
+    let mut line = serde_json::to_string(&value).map_err(std::io::Error::other)?;
+    line.push('\n');
+    let mut stdin = stdin.lock().await;
+    stdin.write_all(line.as_bytes()).await?;
+    stdin.flush().await
+}
+
+fn is_memory_tool(name: &str) -> bool {
+    matches!(name, "memory_search" | "memory_get" | "memory_upsert")
+}
+
+fn json_rpc_error_code(error: &MemoryToolError) -> i64 {
+    match error.code.as_str() {
+        "invalid_request" => -32602,
+        "unavailable" => -32601,
+        _ => -32000,
     }
 }

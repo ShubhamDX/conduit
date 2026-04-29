@@ -20,6 +20,7 @@ async fn start_session_returns_handle_with_events() {
         approval_mode: ApprovalMode::Never,
         security_policy: SecurityPolicy::default(),
         memory: None,
+        memory_tools: None,
         env: Default::default(),
     };
 

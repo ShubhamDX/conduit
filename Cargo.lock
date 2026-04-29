@@ -262,6 +262,7 @@ dependencies = [
  "conduit-security",
  "conduit-tracker",
  "serde",
+ "serde_json",
  "serde_yaml",
  "thiserror",
  "tokio",

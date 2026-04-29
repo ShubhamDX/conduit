@@ -28,6 +28,8 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     async fn start_session(&self, req: StartRequest) -> Result<SessionHandle, AdapterError> {
+        let memory = req.memory.clone();
+        let memory_tools = req.memory_tools.clone();
         let wrapped = conduit_security::wrap::wrap_command_args(
             &req.workspace,
             &req.security_policy,
@@ -37,7 +39,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
         let (program, args) = wrapped
             .split_first()
             .ok_or_else(|| AdapterError::Config("empty wrapped argv".into()))?;
-        let mut client = StdioClient::spawn(program, args).await?;
+        let mut client = StdioClient::spawn_with_memory_tools(program, args, memory_tools).await?;
         let _ = client
             .request(
                 "newSession",
@@ -45,7 +47,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     "prompt": req.prompt,
                     "model": req.model.clone().or(self.config.model.clone()),
                     "workspace": req.workspace.display().to_string(),
-                    "memory": req.memory,
+                    "memory": memory,
                 }),
             )
             .await?;

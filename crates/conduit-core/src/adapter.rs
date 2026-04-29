@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +45,7 @@ pub struct StartRequest {
     pub approval_mode: ApprovalMode,
     pub security_policy: SecurityPolicy,
     pub memory: Option<MemoryCapability>,
+    pub memory_tools: Option<Arc<dyn MemoryToolProvider>>,
     pub env: HashMap<String, String>,
 }
 
@@ -52,6 +54,45 @@ pub struct MemoryCapability {
     pub scope: String,
     pub tags: Vec<String>,
     pub tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{code}: {message}")]
+pub struct MemoryToolError {
+    pub code: String,
+    pub message: String,
+}
+
+impl MemoryToolError {
+    pub fn invalid_request(message: impl Into<String>) -> Self {
+        Self {
+            code: "invalid_request".into(),
+            message: message.into(),
+        }
+    }
+
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            code: "unavailable".into(),
+            message: message.into(),
+        }
+    }
+
+    pub fn backend(message: impl Into<String>) -> Self {
+        Self {
+            code: "backend".into(),
+            message: message.into(),
+        }
+    }
+}
+
+#[async_trait]
+pub trait MemoryToolProvider: Send + Sync {
+    async fn call(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, MemoryToolError>;
 }
 
 pub struct SessionHandle {

@@ -13,6 +13,7 @@ conduit-memory = { path = "../conduit-memory" }
 conduit-security = { path = "../conduit-security" }
 conduit-tracker = { path = "../conduit-tracker" }
 serde = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

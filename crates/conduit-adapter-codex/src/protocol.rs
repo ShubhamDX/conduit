@@ -41,6 +41,37 @@ pub struct RpcNotification {
     pub params: serde_json::Value,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct IncomingRpcRequest {
+    pub id: u64,
+    pub method: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+}
+
+#[derive(Debug)]
+pub enum IncomingRpcMessage {
+    Request(IncomingRpcRequest),
+    Response(RpcResponse),
+    Notification(RpcNotification),
+}
+
+pub fn decode_incoming(line: &str) -> Result<IncomingRpcMessage, serde_json::Error> {
+    let value: serde_json::Value = serde_json::from_str(line)?;
+    let has_method = value.get("method").is_some();
+    let has_id = value.get("id").is_some();
+
+    if has_method && has_id {
+        return serde_json::from_value(value).map(IncomingRpcMessage::Request);
+    }
+
+    if has_id {
+        return serde_json::from_value(value).map(IncomingRpcMessage::Response);
+    }
+
+    serde_json::from_value(value).map(IncomingRpcMessage::Notification)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +95,19 @@ mod tests {
             r#"{"jsonrpc":"2.0","method":"event","params":{"type":"token_delta","text":"foo"}}"#;
         let notification: RpcNotification = serde_json::from_str(encoded).unwrap();
         assert_eq!(notification.method, "event");
+    }
+
+    #[test]
+    fn child_request_decodes_as_request_not_response() {
+        let encoded = r#"{"jsonrpc":"2.0","id":7,"method":"memory_get","params":{"key":"k"}}"#;
+        let message = decode_incoming(encoded).unwrap();
+        match message {
+            IncomingRpcMessage::Request(request) => {
+                assert_eq!(request.id, 7);
+                assert_eq!(request.method, "memory_get");
+                assert_eq!(request.params["key"], "k");
+            }
+            _ => panic!("wrong message type"),
+        }
     }
 }

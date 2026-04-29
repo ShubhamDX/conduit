@@ -14,9 +14,9 @@ Upstream compatibility: a workflow file with only a `codex:` block still works (
 
 ## Shared memory
 
-Shared memory is mediated by the orchestrator, not the adapters. Before a run, the orchestrator passes a scoped memory reference with tags and supported tool names, but it does not inject full memory contents into the prompt. Agents can request context on demand through memory tools such as `memory_search`, `memory_get`, and `memory_upsert`. After a run, the orchestrator redacts the transcript summary and upserts it under the issue id with the issue labels as tags.
+Shared memory is mediated by the orchestrator, not the adapters. Before a run, the orchestrator passes a scoped memory reference with tags and supported tool names, but it does not inject full memory contents into the prompt. Agents request context on demand by issuing child-to-parent JSON-RPC calls for `memory_search`, `memory_get`, and `memory_upsert`; the stdio client routes those calls to an orchestrator-scoped `MemoryToolProvider`. After a run, the orchestrator redacts the transcript summary and upserts it under the issue id with the issue labels as tags.
 
-The default persisted store is SQLite via `memory.kind: sqlite`. This keeps the security boundary simple: agents can benefit from shared context, but they do not own raw database access and cannot bypass redaction.
+The default persisted store is SQLite via `memory.kind: sqlite`. Reads are limited to the current scope or entries sharing the capability tags, and writes are stored under the current scope after redaction. This keeps the security boundary simple: agents can benefit from shared context, but they do not own raw database access and cannot bypass redaction.
 
 ## Required CI gates
 
