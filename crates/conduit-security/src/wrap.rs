@@ -32,6 +32,7 @@ pub fn wrap_command_args(
     out.extend(crate::sandbox_linux::build_bwrap_args(
         workspace,
         policy.workspace_writable,
+        policy.egress_allowlist.is_empty(),
     ));
     out.push("--".to_string());
     out.push(program.to_string());

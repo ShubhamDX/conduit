@@ -1,4 +1,5 @@
-use conduit_security::egress::start_proxy;
+use conduit_core::adapter::SecurityPolicy;
+use conduit_security::egress::{start_proxy, start_proxy_for_policy};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -51,4 +52,36 @@ async fn allows_host_in_allowlist_then_tunnels() {
     let mut echo_buffer = [0_u8; 5];
     stream.read_exact(&mut echo_buffer).await.unwrap();
     assert_eq!(&echo_buffer, b"hello");
+}
+
+#[tokio::test]
+async fn rejects_oversized_connect_headers() {
+    let allowlist = vec!["api.openai.com".to_string()];
+    let (addr, _handle) = start_proxy(allowlist).await.unwrap();
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "CONNECT api.openai.com:443 HTTP/1.1\r\nX-Fill: {}\r\n\r\n",
+        "x".repeat(9 * 1024)
+    );
+
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    let mut buffer = [0_u8; 64];
+    let read = stream.read(&mut buffer).await.unwrap();
+    let response = std::str::from_utf8(&buffer[..read]).unwrap();
+    assert!(response.starts_with("HTTP/1.1 431"));
+}
+
+#[tokio::test]
+async fn policy_allowlist_starts_proxy_and_returns_proxy_env() {
+    let policy = SecurityPolicy {
+        egress_allowlist: vec!["api.openai.com".to_string()],
+        ..Default::default()
+    };
+
+    let (env, handle) = start_proxy_for_policy(&policy).await.unwrap();
+
+    assert!(handle.is_some());
+    assert!(env["HTTPS_PROXY"].starts_with("http://127.0.0.1:"));
+    assert_eq!(env["HTTP_PROXY"], env["HTTPS_PROXY"]);
 }

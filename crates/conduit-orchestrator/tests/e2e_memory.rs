@@ -107,9 +107,9 @@ impl AgentAdapter for MemoryWritingAgent {
                 .call(
                     "memory_upsert",
                     serde_json::json!({
-                        "key": "agent-note",
+                        "key": "agent-note-sk-proj-abc123XYZ456def789GHJ012",
                         "value": "remember sk-proj-abc123XYZ456def789GHJ012",
-                        "tags": ["decision"]
+                        "tags": ["decision", "sk-proj-abc123XYZ456def789GHJ012"]
                     }),
                 )
                 .await
@@ -311,11 +311,13 @@ async fn memory_tool_upsert_is_scoped_and_redacted() {
     let entries = memory.entries().await;
     let note = entries
         .iter()
-        .find(|entry| entry.key == "agent-note")
+        .find(|entry| entry.key.contains("agent-note-sk-proj-[REDACTED]"))
         .expect("agent note should be written");
     assert_eq!(note.source, "issue:I1");
     assert!(note.tags.contains(&"agent:codex".to_string()));
     assert!(note.tags.contains(&"decision".to_string()));
+    assert!(note.tags.contains(&"sk-proj-[REDACTED]".to_string()));
+    assert!(!note.key.contains("abc123"));
     assert!(!note.value.contains("abc123"));
     assert!(note.value.contains("sk-proj-[REDACTED]"));
 }

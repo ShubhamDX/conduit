@@ -121,7 +121,7 @@ class MemoryMcpProxy:
         self.socket_path = ""
 
     async def __aenter__(self) -> "MemoryMcpProxy":
-        self._tmpdir = tempfile.TemporaryDirectory(prefix="conduit-memory-")
+        self._tmpdir = tempfile.TemporaryDirectory(prefix="conduit-memory-", dir="/tmp")
         self.socket_path = str(Path(self._tmpdir.name) / "memory.sock")
         self._server = await asyncio.start_unix_server(
             self._handle_client,
@@ -173,13 +173,16 @@ async def amain() -> None:
             sys.stdout.flush()
 
     parent = ParentRpc(write)
+    tasks: set[asyncio.Task[None]] = set()
     while True:
         raw = await reader.readline()
         if not raw:
             break
         line = raw.decode("utf-8").rstrip()
         if line:
-            asyncio.create_task(parent.dispatch(line))
+            task = asyncio.create_task(parent.dispatch(line))
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
 
 
 def main() -> None:

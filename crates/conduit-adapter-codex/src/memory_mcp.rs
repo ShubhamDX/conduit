@@ -29,7 +29,7 @@ pub fn start_memory_mcp_proxy(
     workspace: &Path,
     memory_tools: Arc<dyn MemoryToolProvider>,
 ) -> Result<MemoryMcpProxy, AdapterError> {
-    let runtime_dir = workspace.join(".c");
+    let runtime_dir = workspace.join(".conduit").join("sockets");
     std::fs::create_dir_all(&runtime_dir)?;
     let id = Uuid::new_v4().simple().to_string();
     let socket_path = runtime_dir.join(format!("m-{}.sock", &id[..12]));

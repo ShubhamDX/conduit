@@ -1,9 +1,10 @@
-use crate::client::StdioClient;
+use crate::client::{StdioClient, StdioClientOptions};
 use crate::memory_mcp::{start_memory_mcp_proxy, MemoryMcpProxy};
 use async_trait::async_trait;
 use conduit_core::adapter::{AgentAdapter, SessionHandle, StartRequest};
 use conduit_core::error::AdapterError;
 use conduit_core::event::AgentEvent;
+use conduit_security::egress::ProxyHandle;
 use std::path::Path;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -41,6 +42,11 @@ impl AgentAdapter for CodexAdapter {
     async fn start_session(&self, req: StartRequest) -> Result<SessionHandle, AdapterError> {
         let memory = req.memory.clone();
         let memory_tools = req.memory_tools.clone();
+        let policy = req.security_policy.clone();
+        let (proxy_env, egress_proxy) =
+            conduit_security::egress::start_proxy_for_policy(&policy).await?;
+        let mut env = req.env.clone();
+        env.extend(proxy_env);
         let mut program_args = self.config.program_args.clone();
         let memory_proxy = if memory.is_some() {
             match (memory_tools.clone(), &self.config.memory_mcp) {
@@ -56,14 +62,24 @@ impl AgentAdapter for CodexAdapter {
         };
         let wrapped = conduit_security::wrap::wrap_command_args(
             &req.workspace,
-            &req.security_policy,
+            &policy,
             &self.config.program,
             &program_args,
         );
         let (program, args) = wrapped
             .split_first()
             .ok_or_else(|| AdapterError::Config("empty wrapped argv".into()))?;
-        let mut client = StdioClient::spawn_with_memory_tools(program, args, memory_tools).await?;
+        let mut client = StdioClient::spawn_with_options(
+            program,
+            args,
+            StdioClientOptions {
+                memory_tools,
+                env,
+                rlimits: conduit_security::rlimits::limits_to_closure(&policy),
+                redact_events: policy.redact_secrets,
+            },
+        )
+        .await?;
         let _ = client
             .request(
                 "newSession",
@@ -78,7 +94,13 @@ impl AgentAdapter for CodexAdapter {
 
         Ok(SessionHandle {
             session_id: Uuid::new_v4().to_string(),
-            events: hold_memory_proxy(client.take_events_rx(), memory_proxy),
+            events: hold_session_guards(
+                client.take_events_rx(),
+                SessionGuards {
+                    _memory_proxy: memory_proxy,
+                    _egress_proxy: egress_proxy,
+                },
+            ),
         })
     }
 
@@ -107,17 +129,28 @@ fn append_memory_mcp_config(
     ));
 }
 
-fn hold_memory_proxy(
+struct SessionGuards {
+    _memory_proxy: Option<MemoryMcpProxy>,
+    _egress_proxy: Option<ProxyHandle>,
+}
+
+impl SessionGuards {
+    fn is_empty(&self) -> bool {
+        self._memory_proxy.is_none() && self._egress_proxy.is_none()
+    }
+}
+
+fn hold_session_guards(
     mut events: mpsc::Receiver<AgentEvent>,
-    memory_proxy: Option<MemoryMcpProxy>,
+    guards: SessionGuards,
 ) -> mpsc::Receiver<AgentEvent> {
-    let Some(memory_proxy) = memory_proxy else {
+    if guards.is_empty() {
         return events;
-    };
+    }
 
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(async move {
-        let _memory_proxy = memory_proxy;
+        let _guards = guards;
         while let Some(event) = events.recv().await {
             if tx.send(event).await.is_err() {
                 break;

@@ -5,6 +5,9 @@ import socket
 import sys
 from typing import Any
 
+MAX_MEMORY_RESPONSE_BYTES = 1024 * 1024
+MEMORY_RESPONSE_TIMEOUT_SECS = 5
+
 
 TOOLS = [
     {
@@ -93,19 +96,28 @@ def handle_payload(payload: dict[str, Any], socket_path: str) -> dict[str, Any] 
 
 def _call_memory(socket_path: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(MEMORY_RESPONSE_TIMEOUT_SECS)
         client.connect(socket_path)
         client.sendall(
             json.dumps({"method": method, "params": params}).encode("utf-8") + b"\n"
         )
-        chunks = []
+        chunks: list[bytes] = []
+        total = 0
         while True:
-            chunk = client.recv(4096)
+            remaining = MAX_MEMORY_RESPONSE_BYTES - total
+            if remaining <= 0:
+                raise RuntimeError("memory response exceeds byte limit")
+            chunk = client.recv(min(4096, remaining + 1))
             if not chunk:
                 break
             chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_MEMORY_RESPONSE_BYTES:
+                raise RuntimeError("memory response exceeds byte limit")
             if b"\n" in chunk:
                 break
-    return json.loads(b"".join(chunks).decode("utf-8"))
+    raw = b"".join(chunks).split(b"\n", 1)[0]
+    return json.loads(raw.decode("utf-8"))
 
 
 def _response(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:

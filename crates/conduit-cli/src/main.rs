@@ -32,6 +32,8 @@ enum Command {
         workflow: String,
         #[arg(long)]
         issue: Option<String>,
+        #[arg(long)]
+        tracker: Option<String>,
     },
     Doctor,
     #[command(hide = true)]
@@ -122,7 +124,11 @@ async fn main() -> Result<()> {
             );
             Ok(())
         }
-        Command::Run { workflow, issue } => {
+        Command::Run {
+            workflow,
+            issue,
+            tracker,
+        } => {
             let yaml = std::fs::read_to_string(&workflow).context("read workflow")?;
             let workflow_path = workflow;
             let workflow = load_workflow(&yaml).context("parse workflow")?;
@@ -135,6 +141,11 @@ async fn main() -> Result<()> {
                 shared_memory,
             };
             let issue_id = issue.context("--issue required in v0.1")?;
+            let tracker_kind = tracker
+                .context("no tracker configured; pass --tracker fake only for smoke tests")?;
+            if tracker_kind != "fake" {
+                anyhow::bail!("unsupported tracker kind: {tracker_kind}");
+            }
             let tracker = conduit_tracker::fake::FakeTracker::with(Vec::new());
             run_one_issue(&tracker, &registry, &config, &issue_id).await?;
             Ok(())

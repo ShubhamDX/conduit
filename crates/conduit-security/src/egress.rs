@@ -1,10 +1,22 @@
+use conduit_core::adapter::SecurityPolicy;
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
+const MAX_CONNECT_HEADER_BYTES: usize = 8 * 1024;
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub struct ProxyHandle {
-    pub task: tokio::task::JoinHandle<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ProxyHandle {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 pub async fn start_proxy(allowlist: Vec<String>) -> std::io::Result<(SocketAddr, ProxyHandle)> {
@@ -29,12 +41,43 @@ pub async fn start_proxy(allowlist: Vec<String>) -> std::io::Result<(SocketAddr,
     Ok((addr, ProxyHandle { task }))
 }
 
+pub async fn start_proxy_for_policy(
+    policy: &SecurityPolicy,
+) -> std::io::Result<(HashMap<String, String>, Option<ProxyHandle>)> {
+    if policy.egress_allowlist.is_empty() {
+        return Ok((HashMap::new(), None));
+    }
+
+    let (addr, handle) = start_proxy(policy.egress_allowlist.clone()).await?;
+    Ok((proxy_env(addr), Some(handle)))
+}
+
+pub fn proxy_env(addr: SocketAddr) -> HashMap<String, String> {
+    let proxy = format!("http://{addr}");
+    HashMap::from([
+        ("HTTPS_PROXY".to_string(), proxy.clone()),
+        ("HTTP_PROXY".to_string(), proxy.clone()),
+        ("https_proxy".to_string(), proxy.clone()),
+        ("http_proxy".to_string(), proxy),
+    ])
+}
+
 async fn handle_connection(socket: TcpStream, allowlist: Vec<String>) -> std::io::Result<()> {
     let (reader, mut writer) = socket.into_split();
     let mut reader = BufReader::new(reader);
-    let mut request_line = String::new();
+    let mut remaining_header_bytes = MAX_CONNECT_HEADER_BYTES;
 
-    reader.read_line(&mut request_line).await?;
+    let request_line = match read_line_capped(&mut reader, &mut remaining_header_bytes).await {
+        Ok(Some(line)) => line,
+        Ok(None) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            writer
+                .write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\n\r\n")
+                .await?;
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     let parts: Vec<&str> = request_line.split_whitespace().collect();
     if parts.len() < 3 || !parts[0].eq_ignore_ascii_case("CONNECT") {
         writer
@@ -47,10 +90,17 @@ async fn handle_connection(socket: TcpStream, allowlist: Vec<String>) -> std::io
     let (host, port) = parse_connect_target(target);
 
     loop {
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).await?;
-        if read == 0 || line == "\r\n" || line == "\n" {
-            break;
+        match read_line_capped(&mut reader, &mut remaining_header_bytes).await {
+            Ok(Some(line)) if line == "\r\n" || line == "\n" => break,
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                writer
+                    .write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\n\r\n")
+                    .await?;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
         }
     }
 
@@ -80,6 +130,46 @@ async fn handle_connection(socket: TcpStream, allowlist: Vec<String>) -> std::io
         .map_err(|error| std::io::Error::other(error.to_string()))?;
     tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
     Ok(())
+}
+
+async fn read_line_capped<R>(
+    reader: &mut R,
+    remaining: &mut usize,
+) -> std::io::Result<Option<String>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    if *remaining == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "proxy header exceeds byte limit",
+        ));
+    }
+
+    let mut bytes = Vec::new();
+    let read = timeout(
+        HEADER_READ_TIMEOUT,
+        reader
+            .take((*remaining + 1) as u64)
+            .read_until(b'\n', &mut bytes),
+    )
+    .await
+    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "proxy header timeout"))??;
+
+    if read == 0 {
+        return Ok(None);
+    }
+    if read > *remaining {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "proxy header exceeds byte limit",
+        ));
+    }
+
+    *remaining -= read;
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
 fn parse_connect_target(target: &str) -> (&str, u16) {

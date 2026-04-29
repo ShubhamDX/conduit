@@ -5,6 +5,7 @@ use crate::protocol::{
 use conduit_core::adapter::{MemoryToolError, MemoryToolProvider};
 use conduit_core::error::AdapterError;
 use conduit_core::event::AgentEvent;
+use conduit_security::redact::redact_event;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,9 +22,29 @@ pub struct StdioClient {
     next_id: Arc<AtomicU64>,
 }
 
+pub type PreExecHook = Box<dyn Fn() -> std::io::Result<()> + Send + Sync + 'static>;
+
+pub struct StdioClientOptions {
+    pub memory_tools: Option<Arc<dyn MemoryToolProvider>>,
+    pub env: HashMap<String, String>,
+    pub rlimits: Option<PreExecHook>,
+    pub redact_events: bool,
+}
+
+impl Default for StdioClientOptions {
+    fn default() -> Self {
+        Self {
+            memory_tools: None,
+            env: HashMap::new(),
+            rlimits: None,
+            redact_events: true,
+        }
+    }
+}
+
 impl StdioClient {
     pub async fn spawn(program: &str, args: &[String]) -> Result<Self, AdapterError> {
-        Self::spawn_with_memory_tools(program, args, None).await
+        Self::spawn_with_options(program, args, StdioClientOptions::default()).await
     }
 
     pub async fn spawn_with_memory_tools(
@@ -31,12 +52,48 @@ impl StdioClient {
         args: &[String],
         memory_tools: Option<Arc<dyn MemoryToolProvider>>,
     ) -> Result<Self, AdapterError> {
+        Self::spawn_with_options(
+            program,
+            args,
+            StdioClientOptions {
+                memory_tools,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn spawn_with_options(
+        program: &str,
+        args: &[String],
+        options: StdioClientOptions,
+    ) -> Result<Self, AdapterError> {
+        let StdioClientOptions {
+            memory_tools,
+            env,
+            rlimits,
+            redact_events,
+        } = options;
         let mut command = Command::new(program);
         command
             .args(args)
+            .envs(env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+
+        #[cfg(unix)]
+        if let Some(rlimits) = rlimits {
+            // SAFETY: pre_exec runs in the child after fork and before exec. The
+            // configured hook only applies OS rlimits so the spawned agent starts
+            // under the policy requested by the orchestrator.
+            unsafe {
+                command.pre_exec(move || rlimits());
+            }
+        }
+
+        #[cfg(not(unix))]
+        let _ = rlimits;
 
         let mut child = command.spawn()?;
         let stdin = child
@@ -69,6 +126,7 @@ impl StdioClient {
                         IncomingRpcMessage::Notification(notification) => {
                             if notification.method == "event" {
                                 if let Some(event) = map_codex_event(&notification.params) {
+                                    let event = maybe_redact_event(event, redact_events);
                                     let _ = events_tx.send(event).await;
                                 }
                             }
@@ -80,6 +138,7 @@ impl StdioClient {
                                 memory_tools.as_deref(),
                                 &stdin_reader,
                                 &events_tx,
+                                redact_events,
                             )
                             .await;
                             continue;
@@ -183,14 +242,18 @@ async fn handle_child_request(
     memory_tools: Option<&dyn MemoryToolProvider>,
     stdin: &Arc<Mutex<ChildStdin>>,
     events_tx: &mpsc::Sender<AgentEvent>,
+    redact_events: bool,
 ) {
     let call_id = format!("jsonrpc:{}", request.id);
     let _ = events_tx
-        .send(AgentEvent::ToolCallStarted {
-            call_id: call_id.clone(),
-            name: request.method.clone(),
-            args: request.params.clone(),
-        })
+        .send(maybe_redact_event(
+            AgentEvent::ToolCallStarted {
+                call_id: call_id.clone(),
+                name: request.method.clone(),
+                args: request.params.clone(),
+            },
+            redact_events,
+        ))
         .await;
 
     let result = match memory_tools {
@@ -221,11 +284,14 @@ async fn handle_child_request(
             )
             .await;
             let _ = events_tx
-                .send(AgentEvent::ToolCallCompleted {
-                    call_id,
-                    ok: true,
-                    output,
-                })
+                .send(maybe_redact_event(
+                    AgentEvent::ToolCallCompleted {
+                        call_id,
+                        ok: true,
+                        output,
+                    },
+                    redact_events,
+                ))
                 .await;
         }
         Err(error) => {
@@ -243,13 +309,24 @@ async fn handle_child_request(
             )
             .await;
             let _ = events_tx
-                .send(AgentEvent::ToolCallCompleted {
-                    call_id,
-                    ok: false,
-                    output,
-                })
+                .send(maybe_redact_event(
+                    AgentEvent::ToolCallCompleted {
+                        call_id,
+                        ok: false,
+                        output,
+                    },
+                    redact_events,
+                ))
                 .await;
         }
+    }
+}
+
+fn maybe_redact_event(event: AgentEvent, redact_events: bool) -> AgentEvent {
+    if redact_events {
+        redact_event(event)
+    } else {
+        event
     }
 }
 

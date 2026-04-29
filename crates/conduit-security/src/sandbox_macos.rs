@@ -29,7 +29,12 @@ pub fn build_profile(workspace: &Path, writable: bool) -> String {
 
 pub fn write_profile_to_tempfile(workspace: &Path, writable: bool) -> std::io::Result<PathBuf> {
     let profile = build_profile(workspace, writable);
-    let path = std::env::temp_dir().join(format!("conduit-sbpl-{}.sb", std::process::id()));
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let path =
+        std::env::temp_dir().join(format!("conduit-sbpl-{}-{unique}.sb", std::process::id()));
     std::fs::write(&path, profile)?;
     Ok(path)
 }

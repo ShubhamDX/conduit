@@ -7,7 +7,7 @@ use conduit_core::adapter::{
 };
 use conduit_core::event::AgentEvent;
 use conduit_memory::{MemoryEntry, MemoryError, MemoryQuery, MemoryStore};
-use conduit_security::redact::redact;
+use conduit_security::redact::{redact, redact_event};
 use conduit_tracker::Issue;
 use conduit_tracker::{Tracker, TrackerError};
 use serde::de::DeserializeOwned;
@@ -75,6 +75,11 @@ pub async fn run_one_issue(
     let mut transcript = String::new();
 
     while let Some(event) = handle.events.recv().await {
+        let event = if config.default_policy.redact_secrets {
+            redact_event(event)
+        } else {
+            event
+        };
         match event {
             AgentEvent::TokenDelta { text } => transcript.push_str(&text),
             AgentEvent::SessionEnded { .. } => break,
@@ -107,7 +112,7 @@ fn memory_capability(
 
     Some(MemoryCapability {
         scope: format!("issue:{issue_id}"),
-        tags: tags.to_vec(),
+        tags: tags.iter().map(|tag| redact(tag)).collect(),
         tools: MEMORY_TOOLS
             .iter()
             .map(|tool| (*tool).to_string())
@@ -189,11 +194,13 @@ impl ScopedMemoryTools {
 
     async fn upsert(&self, args: serde_json::Value) -> Result<serde_json::Value, MemoryToolError> {
         let args: UpsertArgs = parse_args(args)?;
+        let base_tags: Vec<_> = self.tags.iter().map(|tag| redact(tag)).collect();
+        let extra_tags: Vec<_> = args.tags.iter().map(|tag| redact(tag)).collect();
         self.memory
             .upsert(MemoryEntry {
-                key: args.key,
+                key: redact(&args.key),
                 value: redact(&args.value),
-                tags: merge_tags(&self.tags, &args.tags),
+                tags: merge_tags(&base_tags, &extra_tags),
                 source: self.scope.clone(),
             })
             .await
@@ -264,7 +271,7 @@ async fn write_memory(
             .upsert(MemoryEntry {
                 key: issue_id.to_string(),
                 value: summary.to_string(),
-                tags: tags.to_vec(),
+                tags: tags.iter().map(|tag| redact(tag)).collect(),
                 source: format!("issue:{issue_id}"),
             })
             .await?;
