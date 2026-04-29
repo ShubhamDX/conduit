@@ -136,22 +136,10 @@ struct SessionGuards {
     _egress_proxy: Option<ProxyHandle>,
 }
 
-impl SessionGuards {
-    fn is_empty(&self) -> bool {
-        !self._wrapped.needs_cleanup()
-            && self._memory_proxy.is_none()
-            && self._egress_proxy.is_none()
-    }
-}
-
 fn hold_session_guards(
     mut events: mpsc::Receiver<AgentEvent>,
     guards: SessionGuards,
 ) -> mpsc::Receiver<AgentEvent> {
-    if guards.is_empty() {
-        return events;
-    }
-
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(async move {
         let _guards = guards;

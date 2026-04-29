@@ -301,6 +301,10 @@ impl SqliteOrchestrationStore {
         let event_type = agent_event_type(&event);
         let event = redact_event(event);
         let payload = serde_json::to_value(&event).map_err(to_backend)?;
+        debug_assert_eq!(
+            payload.get("type").and_then(serde_json::Value::as_str),
+            Some(event_type.as_str())
+        );
         let payload_json = serde_json::to_string(&payload).map_err(to_backend)?;
         let sequence = next_event_sequence(&transaction, run_id)?;
         let now = unix_time_millis();
@@ -376,14 +380,20 @@ impl SqliteOrchestrationStore {
                 r#"
                 UPDATE orchestration_approvals
                 SET status = ?1, resolved_at_ms = ?2
-                WHERE id = ?3
+                WHERE id = ?3 AND status = 'pending'
                 "#,
                 params![decision.as_str(), now, approval_id],
             )
             .map_err(to_backend)?;
         if updated == 0 {
+            let Some(existing) = select_approval(&connection, approval_id)? else {
+                return Err(StateError::Backend(format!(
+                    "approval not found: {approval_id}"
+                )));
+            };
             return Err(StateError::Backend(format!(
-                "approval not found: {approval_id}"
+                "approval already resolved: {approval_id} ({})",
+                existing.status
             )));
         }
 

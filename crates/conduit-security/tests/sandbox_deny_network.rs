@@ -8,7 +8,7 @@ fn non_loopback_network_is_denied() {
     };
     let code = r#"
 import socket
-socket.create_connection(("1.1.1.1", 80), timeout=1)
+socket.create_connection(("1.1.1.1", 80), timeout=0.1)
 "#;
     let wrapped = conduit_security::wrap::wrap_command(
         workspace.path(),

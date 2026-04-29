@@ -22,8 +22,8 @@ fn patterns() -> &'static [Pattern] {
                 replace: "sk-ant-[REDACTED]",
             },
             Pattern {
-                regex: Regex::new(r"\bsk-[A-Za-z0-9]{20,}\b").unwrap(),
-                replace: "sk-[REDACTED]",
+                regex: Regex::new(r"\bsk-[A-Za-z0-9_-]{20,}([^A-Za-z0-9_-]|$)").unwrap(),
+                replace: "sk-[REDACTED]$1",
             },
             Pattern {
                 regex: Regex::new(r"AKIA[0-9A-Z]{16}").unwrap(),
@@ -136,6 +136,14 @@ mod tests {
         let out = redact(input);
         assert!(!out.contains("abc123"));
         assert!(out.contains("sk-proj-[REDACTED]"));
+    }
+
+    #[test]
+    fn redacts_generic_sk_keys_with_dash_and_underscore() {
+        let input = "key is sk-abc_def-ghi_jkl-mno_pqr1234.";
+        let out = redact(input);
+        assert!(!out.contains("abc_def"));
+        assert!(out.contains("sk-[REDACTED]."));
     }
 
     #[test]

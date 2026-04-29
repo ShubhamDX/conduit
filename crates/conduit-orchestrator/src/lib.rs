@@ -113,7 +113,7 @@ fn memory_capability(
 
     Some(MemoryCapability {
         scope: format!("issue:{issue_id}"),
-        tags: tags.iter().map(|tag| redact(tag)).collect(),
+        tags: dedup_tags(tags.iter().map(|tag| redact(tag)).collect()),
         tools: MEMORY_TOOLS
             .iter()
             .map(|tool| (*tool).to_string())
@@ -247,13 +247,23 @@ fn clamp_limit(limit: Option<usize>) -> usize {
 }
 
 fn merge_tags(base: &[String], extra: &[String]) -> Vec<String> {
-    let mut merged = base.to_vec();
+    let mut merged = dedup_tags(base.to_vec());
     for tag in extra {
         if !merged.iter().any(|existing| existing == tag) {
             merged.push(tag.clone());
         }
     }
     merged
+}
+
+fn dedup_tags(tags: Vec<String>) -> Vec<String> {
+    let mut deduped = Vec::new();
+    for tag in tags {
+        if !deduped.iter().any(|existing| existing == &tag) {
+            deduped.push(tag);
+        }
+    }
+    deduped
 }
 
 fn tags_overlap(left: &[String], right: &[String]) -> bool {
@@ -268,12 +278,12 @@ async fn write_memory(
     summary: &str,
 ) -> Result<(), OrchError> {
     if let Some(memory) = &config.shared_memory {
-        let redacted_tags = tags.iter().map(|tag| redact(tag)).collect::<Vec<_>>();
+        let redacted_tags = dedup_tags(tags.iter().map(|tag| redact(tag)).collect());
         memory
             .upsert(MemoryEntry {
                 key: issue_id.to_string(),
                 value: summary.to_string(),
-                tags: merge_tags(&[], &redacted_tags),
+                tags: redacted_tags,
                 source: format!("issue:{issue_id}"),
             })
             .await?;

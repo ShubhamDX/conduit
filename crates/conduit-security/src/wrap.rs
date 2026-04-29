@@ -15,15 +15,6 @@ impl WrappedCommand {
     pub fn argv(&self) -> &[String] {
         &self.argv
     }
-
-    pub fn needs_cleanup(&self) -> bool {
-        !self.cleanup_paths.is_empty()
-    }
-
-    pub fn into_argv(mut self) -> Vec<String> {
-        self.cleanup_paths.clear();
-        std::mem::take(&mut self.argv)
-    }
 }
 
 impl Drop for WrappedCommand {
@@ -91,17 +82,6 @@ pub fn wrap_command(
         argv: out,
         cleanup_paths: Vec::new(),
     })
-}
-
-pub fn wrap_command_args(
-    workspace: &Path,
-    policy: &SecurityPolicy,
-    program: &str,
-    program_args: &[String],
-) -> Vec<String> {
-    wrap_command(workspace, policy, program, program_args)
-        .expect("write sandbox profile")
-        .into_argv()
 }
 
 #[cfg(test)]
