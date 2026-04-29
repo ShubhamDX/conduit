@@ -14,6 +14,7 @@ pub enum ApprovalMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SecurityPolicy {
     pub egress_allowlist: Vec<String>,
     pub max_cpu_secs: Option<u64>,

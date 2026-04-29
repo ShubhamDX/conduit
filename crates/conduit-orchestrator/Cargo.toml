@@ -6,3 +6,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
+conduit-adapter-registry = { path = "../conduit-adapter-registry" }
+conduit-core = { path = "../conduit-core" }
+conduit-security = { path = "../conduit-security" }
+conduit-tracker = { path = "../conduit-tracker" }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
