@@ -168,7 +168,7 @@ async fn child_can_call_memory_tools_over_stdio() {
 }
 
 #[tokio::test]
-async fn memory_tool_events_are_redacted_before_they_leave_client() {
+async fn memory_tool_events_preserve_raw_output_before_orchestrator_persistence() {
     let fixture = format!(
         "{}/tests/fixtures/fake_memory_codex.py",
         env!("CARGO_MANIFEST_DIR")
@@ -178,7 +178,6 @@ async fn memory_tool_events_are_redacted_before_they_leave_client() {
         &[fixture],
         StdioClientOptions {
             memory_tools: Some(Arc::new(SecretMemoryTools)),
-            redact_events: true,
             ..Default::default()
         },
     )
@@ -194,15 +193,13 @@ async fn memory_tool_events_are_redacted_before_they_leave_client() {
     let _started = client.next_event().await.unwrap();
     match client.next_event().await.unwrap() {
         AgentEvent::ToolCallCompleted { output, .. } => {
-            assert!(!output.contains("abc123"));
-            assert!(output.contains("sk-proj-[REDACTED]"));
+            assert!(output.contains("sk-proj-abc123XYZ456def789GHJ012"));
         }
         _ => panic!("wrong variant"),
     }
     match client.next_event().await.unwrap() {
         AgentEvent::TokenDelta { text } => {
-            assert!(!text.contains("abc123"));
-            assert!(text.contains("sk-proj-[REDACTED]"));
+            assert!(text.contains("sk-proj-abc123XYZ456def789GHJ012"));
         }
         _ => panic!("wrong variant"),
     }

@@ -1,6 +1,8 @@
 use conduit_core::event::{AgentEvent, Risk};
 use conduit_security::redact::{redact, redact_event};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::types::{Type, Value};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
@@ -152,6 +154,22 @@ pub struct ApprovalRecord {
     pub resolved_at_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecision {
+    Approved,
+    Denied,
+}
+
+impl ApprovalDecision {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewMessage {
     pub task_id: Option<String>,
@@ -201,6 +219,8 @@ impl SqliteOrchestrationStore {
         })
     }
 
+    /// Creates an in-memory store for tests and short-lived embedded control
+    /// surfaces. Production orchestrators should use `open` with a durable path.
     pub fn open_in_memory() -> Result<Self, StateError> {
         let connection = Connection::open_in_memory().map_err(to_backend)?;
         initialize_schema(&connection)?;
@@ -275,20 +295,17 @@ impl SqliteOrchestrationStore {
         run_id: &str,
         event: AgentEvent,
     ) -> Result<EventRecord, StateError> {
-        let connection = self.connection.lock().await;
-        ensure_run_exists(&connection, run_id)?;
+        let mut connection = self.connection.lock().await;
+        let transaction = connection.transaction().map_err(to_backend)?;
+        ensure_run_exists(&transaction, run_id)?;
+        let event_type = agent_event_type(&event);
         let event = redact_event(event);
         let payload = serde_json::to_value(&event).map_err(to_backend)?;
-        let event_type = payload
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
         let payload_json = serde_json::to_string(&payload).map_err(to_backend)?;
-        let sequence = next_event_sequence(&connection, run_id)?;
+        let sequence = next_event_sequence(&transaction, run_id)?;
         let now = unix_time_millis();
 
-        connection
+        transaction
             .execute(
                 r#"
                 INSERT INTO orchestration_events (
@@ -299,7 +316,8 @@ impl SqliteOrchestrationStore {
                 params![run_id, sequence, event_type, payload_json, now],
             )
             .map_err(to_backend)?;
-        let id = connection.last_insert_rowid();
+        let id = transaction.last_insert_rowid();
+        transaction.commit().map_err(to_backend)?;
 
         Ok(EventRecord {
             id,
@@ -344,6 +362,33 @@ impl SqliteOrchestrationStore {
             created_at_ms: now,
             resolved_at_ms: None,
         })
+    }
+
+    pub async fn resolve_approval(
+        &self,
+        approval_id: &str,
+        decision: ApprovalDecision,
+    ) -> Result<ApprovalRecord, StateError> {
+        let connection = self.connection.lock().await;
+        let now = unix_time_millis();
+        let updated = connection
+            .execute(
+                r#"
+                UPDATE orchestration_approvals
+                SET status = ?1, resolved_at_ms = ?2
+                WHERE id = ?3
+                "#,
+                params![decision.as_str(), now, approval_id],
+            )
+            .map_err(to_backend)?;
+        if updated == 0 {
+            return Err(StateError::Backend(format!(
+                "approval not found: {approval_id}"
+            )));
+        }
+
+        select_approval(&connection, approval_id)?
+            .ok_or_else(|| StateError::Backend(format!("approval not found: {approval_id}")))
     }
 
     pub async fn record_message(&self, message: NewMessage) -> Result<MessageRecord, StateError> {
@@ -535,52 +580,78 @@ fn select_events_for_runs(
     connection: &Connection,
     run_ids: &[&str],
 ) -> Result<Vec<EventRecord>, StateError> {
-    let mut events = Vec::new();
-    for run_id in run_ids {
-        let mut statement = connection
-            .prepare(
-                r#"
-                SELECT id, run_id, sequence, event_type, payload_json, created_at_ms
-                FROM orchestration_events
-                WHERE run_id = ?1
-                ORDER BY sequence
-                "#,
-            )
-            .map_err(to_backend)?;
-        let rows = statement
-            .query_map(params![run_id], event_row)
-            .map_err(to_backend)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(to_backend)?;
-        events.extend(rows);
+    if run_ids.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(events)
+
+    let sql = format!(
+        r#"
+        SELECT id, run_id, sequence, event_type, payload_json, created_at_ms
+        FROM orchestration_events
+        WHERE run_id IN ({})
+        ORDER BY run_id, sequence
+        "#,
+        placeholders(run_ids.len())
+    );
+    let values = run_ids
+        .iter()
+        .map(|run_id| Value::Text((*run_id).to_string()))
+        .collect::<Vec<_>>();
+    let mut statement = connection.prepare(&sql).map_err(to_backend)?;
+    let rows = statement
+        .query_map(params_from_iter(values), event_row)
+        .map_err(to_backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(to_backend)?;
+    Ok(rows)
 }
 
 fn select_approvals_for_runs(
     connection: &Connection,
     run_ids: &[&str],
 ) -> Result<Vec<ApprovalRecord>, StateError> {
-    let mut approvals = Vec::new();
-    for run_id in run_ids {
-        let mut statement = connection
-            .prepare(
-                r#"
-                SELECT id, run_id, status, reason, risk_json, created_at_ms, resolved_at_ms
-                FROM orchestration_approvals
-                WHERE run_id = ?1
-                ORDER BY created_at_ms, id
-                "#,
-            )
-            .map_err(to_backend)?;
-        let rows = statement
-            .query_map(params![run_id], approval_row)
-            .map_err(to_backend)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(to_backend)?;
-        approvals.extend(rows);
+    if run_ids.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(approvals)
+
+    let sql = format!(
+        r#"
+        SELECT id, run_id, status, reason, risk_json, created_at_ms, resolved_at_ms
+        FROM orchestration_approvals
+        WHERE run_id IN ({})
+        ORDER BY run_id, created_at_ms, id
+        "#,
+        placeholders(run_ids.len())
+    );
+    let values = run_ids
+        .iter()
+        .map(|run_id| Value::Text((*run_id).to_string()))
+        .collect::<Vec<_>>();
+    let mut statement = connection.prepare(&sql).map_err(to_backend)?;
+    let rows = statement
+        .query_map(params_from_iter(values), approval_row)
+        .map_err(to_backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(to_backend)?;
+    Ok(rows)
+}
+
+fn select_approval(
+    connection: &Connection,
+    approval_id: &str,
+) -> Result<Option<ApprovalRecord>, StateError> {
+    connection
+        .query_row(
+            r#"
+            SELECT id, run_id, status, reason, risk_json, created_at_ms, resolved_at_ms
+            FROM orchestration_approvals
+            WHERE id = ?1
+            "#,
+            params![approval_id],
+            approval_row,
+        )
+        .optional()
+        .map_err(to_backend)
 }
 
 fn select_messages_for_task(
@@ -607,7 +678,7 @@ fn select_messages_for_task(
 
 fn task_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord> {
     let labels_json: String = row.get(4)?;
-    let labels = serde_json::from_str(&labels_json).unwrap_or_default();
+    let labels = decode_json_column(&labels_json, 4)?;
     let status: String = row.get(5)?;
     Ok(TaskRecord {
         id: row.get(0)?,
@@ -635,7 +706,7 @@ fn run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecord> {
 
 fn event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRecord> {
     let payload_json: String = row.get(4)?;
-    let payload = serde_json::from_str(&payload_json).unwrap_or(serde_json::Value::Null);
+    let payload = decode_json_column(&payload_json, 4)?;
     Ok(EventRecord {
         id: row.get(0)?,
         run_id: row.get(1)?,
@@ -648,7 +719,7 @@ fn event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRecord> {
 
 fn approval_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApprovalRecord> {
     let risk_json: String = row.get(4)?;
-    let risk = serde_json::from_str(&risk_json).unwrap_or(Risk::Medium);
+    let risk = decode_json_column(&risk_json, 4)?;
     Ok(ApprovalRecord {
         id: row.get(0)?,
         run_id: row.get(1)?,
@@ -710,6 +781,36 @@ fn next_event_sequence(connection: &Connection, run_id: &str) -> Result<i64, Sta
             |row| row.get(0),
         )
         .map_err(to_backend)
+}
+
+fn agent_event_type(event: &AgentEvent) -> String {
+    match event {
+        AgentEvent::SessionStarted { .. } => "session_started",
+        AgentEvent::TokenDelta { .. } => "token_delta",
+        AgentEvent::ToolCallStarted { .. } => "tool_call_started",
+        AgentEvent::ToolCallCompleted { .. } => "tool_call_completed",
+        AgentEvent::ApprovalRequested { .. } => "approval_requested",
+        AgentEvent::TurnCompleted { .. } => "turn_completed",
+        AgentEvent::SessionEnded { .. } => "session_ended",
+        AgentEvent::Error { .. } => "error",
+    }
+    .to_string()
+}
+
+fn placeholders(count: usize) -> String {
+    std::iter::repeat("?")
+        .take(count)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn decode_json_column<T>(raw: &str, column: usize) -> rusqlite::Result<T>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_str(raw).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
+    })
 }
 
 fn unix_time_millis() -> i64 {

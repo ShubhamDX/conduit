@@ -21,8 +21,8 @@ pub fn build_profile(workspace: &Path, writable: bool) -> String {
 (allow sysctl-read)
 (allow mach-lookup)
 (allow iokit-open)
-(allow network* (remote ip "localhost:*"))
-(allow network* (local ip "*:*"))
+(deny network-outbound)
+(allow network-outbound (remote ip "localhost:*"))
 "#
     )
 }
@@ -63,9 +63,11 @@ mod tests {
     }
 
     #[test]
-    fn profile_allows_loopback_network() {
+    fn profile_allows_loopback_network_only() {
         let profile = build_profile(Path::new("/tmp/work"), true);
-        assert!(profile.contains("(allow network*"));
-        assert!(profile.contains("localhost"));
+        assert!(profile.contains("(deny network-outbound)"));
+        assert!(profile.contains("(allow network-outbound (remote ip \"localhost:*\"))"));
+        assert!(!profile.contains("(allow network*"));
+        assert!(!profile.contains("(allow network-outbound (local ip"));
     }
 }

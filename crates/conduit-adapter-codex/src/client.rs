@@ -5,7 +5,6 @@ use crate::protocol::{
 use conduit_core::adapter::{MemoryToolError, MemoryToolProvider};
 use conduit_core::error::AdapterError;
 use conduit_core::event::AgentEvent;
-use conduit_security::redact::redact_event;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,7 +27,6 @@ pub struct StdioClientOptions {
     pub memory_tools: Option<Arc<dyn MemoryToolProvider>>,
     pub env: HashMap<String, String>,
     pub rlimits: Option<PreExecHook>,
-    pub redact_events: bool,
 }
 
 impl Default for StdioClientOptions {
@@ -37,7 +35,6 @@ impl Default for StdioClientOptions {
             memory_tools: None,
             env: HashMap::new(),
             rlimits: None,
-            redact_events: true,
         }
     }
 }
@@ -72,7 +69,6 @@ impl StdioClient {
             memory_tools,
             env,
             rlimits,
-            redact_events,
         } = options;
         let mut command = Command::new(program);
         command
@@ -86,7 +82,9 @@ impl StdioClient {
         if let Some(rlimits) = rlimits {
             // SAFETY: pre_exec runs in the child after fork and before exec. The
             // configured hook only applies OS rlimits so the spawned agent starts
-            // under the policy requested by the orchestrator.
+            // under the policy requested by the orchestrator. Keep this hook
+            // async-signal-safe: do not call tokio, lock mutexes, allocate, or do
+            // anything beyond simple libc-style resource setup.
             unsafe {
                 command.pre_exec(move || rlimits());
             }
@@ -126,7 +124,6 @@ impl StdioClient {
                         IncomingRpcMessage::Notification(notification) => {
                             if notification.method == "event" {
                                 if let Some(event) = map_codex_event(&notification.params) {
-                                    let event = maybe_redact_event(event, redact_events);
                                     let _ = events_tx.send(event).await;
                                 }
                             }
@@ -138,7 +135,6 @@ impl StdioClient {
                                 memory_tools.as_deref(),
                                 &stdin_reader,
                                 &events_tx,
-                                redact_events,
                             )
                             .await;
                             continue;
@@ -242,18 +238,14 @@ async fn handle_child_request(
     memory_tools: Option<&dyn MemoryToolProvider>,
     stdin: &Arc<Mutex<ChildStdin>>,
     events_tx: &mpsc::Sender<AgentEvent>,
-    redact_events: bool,
 ) {
     let call_id = format!("jsonrpc:{}", request.id);
     let _ = events_tx
-        .send(maybe_redact_event(
-            AgentEvent::ToolCallStarted {
-                call_id: call_id.clone(),
-                name: request.method.clone(),
-                args: request.params.clone(),
-            },
-            redact_events,
-        ))
+        .send(AgentEvent::ToolCallStarted {
+            call_id: call_id.clone(),
+            name: request.method.clone(),
+            args: request.params.clone(),
+        })
         .await;
 
     let result = match memory_tools {
@@ -284,14 +276,11 @@ async fn handle_child_request(
             )
             .await;
             let _ = events_tx
-                .send(maybe_redact_event(
-                    AgentEvent::ToolCallCompleted {
-                        call_id,
-                        ok: true,
-                        output,
-                    },
-                    redact_events,
-                ))
+                .send(AgentEvent::ToolCallCompleted {
+                    call_id,
+                    ok: true,
+                    output,
+                })
                 .await;
         }
         Err(error) => {
@@ -309,24 +298,13 @@ async fn handle_child_request(
             )
             .await;
             let _ = events_tx
-                .send(maybe_redact_event(
-                    AgentEvent::ToolCallCompleted {
-                        call_id,
-                        ok: false,
-                        output,
-                    },
-                    redact_events,
-                ))
+                .send(AgentEvent::ToolCallCompleted {
+                    call_id,
+                    ok: false,
+                    output,
+                })
                 .await;
         }
-    }
-}
-
-fn maybe_redact_event(event: AgentEvent, redact_events: bool) -> AgentEvent {
-    if redact_events {
-        redact_event(event)
-    } else {
-        event
     }
 }
 

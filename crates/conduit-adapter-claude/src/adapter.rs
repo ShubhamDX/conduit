@@ -4,6 +4,7 @@ use conduit_core::adapter::{AgentAdapter, SessionHandle, StartRequest};
 use conduit_core::error::AdapterError;
 use conduit_core::event::AgentEvent;
 use conduit_security::egress::ProxyHandle;
+use conduit_security::wrap::WrappedCommand;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -38,14 +39,14 @@ impl AgentAdapter for ClaudeCodeAdapter {
             conduit_security::egress::start_proxy_for_policy(&policy).await?;
         let mut env = req.env.clone();
         env.extend(proxy_env);
-        let wrapped = conduit_security::wrap::wrap_command_args(
+        let wrapped = conduit_security::wrap::wrap_command(
             &req.workspace,
             &policy,
             &self.config.python,
             &self.config.bridge_args,
-        );
+        )?;
         let (program, args) = wrapped
-            .split_first()
+            .program_and_args()
             .ok_or_else(|| AdapterError::Config("empty wrapped argv".into()))?;
         let mut client = StdioClient::spawn_with_options(
             program,
@@ -54,7 +55,6 @@ impl AgentAdapter for ClaudeCodeAdapter {
                 memory_tools,
                 env,
                 rlimits: conduit_security::rlimits::limits_to_closure(&policy),
-                redact_events: policy.redact_secrets,
             },
         )
         .await?;
@@ -72,7 +72,13 @@ impl AgentAdapter for ClaudeCodeAdapter {
 
         Ok(SessionHandle {
             session_id: Uuid::new_v4().to_string(),
-            events: hold_egress_proxy(client.take_events_rx(), egress_proxy),
+            events: hold_session_guards(
+                client.take_events_rx(),
+                SessionGuards {
+                    _wrapped: wrapped,
+                    _egress_proxy: egress_proxy,
+                },
+            ),
         })
     }
 
@@ -81,17 +87,28 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 }
 
-fn hold_egress_proxy(
+struct SessionGuards {
+    _wrapped: WrappedCommand,
+    _egress_proxy: Option<ProxyHandle>,
+}
+
+impl SessionGuards {
+    fn is_empty(&self) -> bool {
+        !self._wrapped.needs_cleanup() && self._egress_proxy.is_none()
+    }
+}
+
+fn hold_session_guards(
     mut events: mpsc::Receiver<AgentEvent>,
-    egress_proxy: Option<ProxyHandle>,
+    guards: SessionGuards,
 ) -> mpsc::Receiver<AgentEvent> {
-    let Some(egress_proxy) = egress_proxy else {
+    if guards.is_empty() {
         return events;
-    };
+    }
 
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(async move {
-        let _egress_proxy = egress_proxy;
+        let _guards = guards;
         while let Some(event) = events.recv().await {
             if tx.send(event).await.is_err() {
                 break;

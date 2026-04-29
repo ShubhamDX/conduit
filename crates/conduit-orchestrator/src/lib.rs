@@ -268,11 +268,12 @@ async fn write_memory(
     summary: &str,
 ) -> Result<(), OrchError> {
     if let Some(memory) = &config.shared_memory {
+        let redacted_tags = tags.iter().map(|tag| redact(tag)).collect::<Vec<_>>();
         memory
             .upsert(MemoryEntry {
                 key: issue_id.to_string(),
                 value: summary.to_string(),
-                tags: tags.iter().map(|tag| redact(tag)).collect(),
+                tags: merge_tags(&[], &redacted_tags),
                 source: format!("issue:{issue_id}"),
             })
             .await?;

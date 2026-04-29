@@ -22,7 +22,7 @@ fn patterns() -> &'static [Pattern] {
                 replace: "sk-ant-[REDACTED]",
             },
             Pattern {
-                regex: Regex::new(r"sk-[A-Za-z0-9]{20,}").unwrap(),
+                regex: Regex::new(r"\bsk-[A-Za-z0-9]{20,}\b").unwrap(),
                 replace: "sk-[REDACTED]",
             },
             Pattern {
@@ -42,7 +42,7 @@ fn patterns() -> &'static [Pattern] {
                 replace: "xoxb-[REDACTED]",
             },
             Pattern {
-                regex: Regex::new(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{20,}").unwrap(),
+                regex: Regex::new(r"(?i)bearer[ \t]+[A-Za-z0-9._~+/=-]{20,}").unwrap(),
                 replace: "Bearer [REDACTED]",
             },
             Pattern {

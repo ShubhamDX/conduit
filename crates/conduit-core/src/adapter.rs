@@ -21,6 +21,9 @@ pub struct SecurityPolicy {
     pub max_cpu_secs: Option<u64>,
     pub max_memory_bytes: Option<u64>,
     pub max_open_files: Option<u64>,
+    /// Defaults to writable for compatibility with issue-driven coding workflows.
+    /// Production workflows should set this explicitly so write access is a
+    /// deliberate policy choice.
     pub workspace_writable: bool,
     pub redact_secrets: bool,
 }

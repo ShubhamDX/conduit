@@ -5,6 +5,7 @@ use conduit_core::adapter::{AgentAdapter, SessionHandle, StartRequest};
 use conduit_core::error::AdapterError;
 use conduit_core::event::AgentEvent;
 use conduit_security::egress::ProxyHandle;
+use conduit_security::wrap::WrappedCommand;
 use std::path::Path;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -60,14 +61,14 @@ impl AgentAdapter for CodexAdapter {
         } else {
             None
         };
-        let wrapped = conduit_security::wrap::wrap_command_args(
+        let wrapped = conduit_security::wrap::wrap_command(
             &req.workspace,
             &policy,
             &self.config.program,
             &program_args,
-        );
+        )?;
         let (program, args) = wrapped
-            .split_first()
+            .program_and_args()
             .ok_or_else(|| AdapterError::Config("empty wrapped argv".into()))?;
         let mut client = StdioClient::spawn_with_options(
             program,
@@ -76,7 +77,6 @@ impl AgentAdapter for CodexAdapter {
                 memory_tools,
                 env,
                 rlimits: conduit_security::rlimits::limits_to_closure(&policy),
-                redact_events: policy.redact_secrets,
             },
         )
         .await?;
@@ -97,6 +97,7 @@ impl AgentAdapter for CodexAdapter {
             events: hold_session_guards(
                 client.take_events_rx(),
                 SessionGuards {
+                    _wrapped: wrapped,
                     _memory_proxy: memory_proxy,
                     _egress_proxy: egress_proxy,
                 },
@@ -130,13 +131,16 @@ fn append_memory_mcp_config(
 }
 
 struct SessionGuards {
+    _wrapped: WrappedCommand,
     _memory_proxy: Option<MemoryMcpProxy>,
     _egress_proxy: Option<ProxyHandle>,
 }
 
 impl SessionGuards {
     fn is_empty(&self) -> bool {
-        self._memory_proxy.is_none() && self._egress_proxy.is_none()
+        !self._wrapped.needs_cleanup()
+            && self._memory_proxy.is_none()
+            && self._egress_proxy.is_none()
     }
 }
 

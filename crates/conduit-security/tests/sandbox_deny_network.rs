@@ -1,18 +1,22 @@
 #[cfg(target_os = "macos")]
 #[test]
-fn write_outside_workspace_is_denied() {
-    let workspace = TempWorkspace::new("conduit-test-ws");
-    let fixture = format!(
-        "{}/tests/fixtures/evil_write.sh",
-        env!("CARGO_MANIFEST_DIR")
-    );
+fn non_loopback_network_is_denied() {
+    let workspace = TempWorkspace::new("conduit-test-net-ws");
     let policy = conduit_core::adapter::SecurityPolicy {
         workspace_writable: true,
         ..Default::default()
     };
-    let wrapped =
-        conduit_security::wrap::wrap_command(workspace.path(), &policy, "bash", &[fixture])
-            .unwrap();
+    let code = r#"
+import socket
+socket.create_connection(("1.1.1.1", 80), timeout=1)
+"#;
+    let wrapped = conduit_security::wrap::wrap_command(
+        workspace.path(),
+        &policy,
+        "python3",
+        &["-c".into(), code.into()],
+    )
+    .unwrap();
     let (program, args) = wrapped.program_and_args().unwrap();
     let output = std::process::Command::new(program)
         .args(args)
@@ -24,7 +28,10 @@ fn write_outside_workspace_is_denied() {
         !stderr.contains("sandbox-exec:"),
         "sandbox profile failed to load: {stderr}"
     );
-    assert!(!output.status.success(), "write was not blocked by sandbox");
+    assert!(
+        !output.status.success(),
+        "non-loopback network escaped sandbox"
+    );
 }
 
 #[cfg(target_os = "macos")]
