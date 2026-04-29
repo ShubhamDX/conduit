@@ -118,6 +118,7 @@ async fn main() -> Result<()> {
                 workspace: workflow.workspace.clone(),
                 assignee: workflow.assignee.clone(),
                 default_policy: workflow.security.clone(),
+                shared_memory: None,
             };
             let issue_id = issue.context("--issue required in v0.1")?;
             let tracker = conduit_tracker::fake::FakeTracker::with(Vec::new());

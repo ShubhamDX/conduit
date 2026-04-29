@@ -218,12 +218,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "conduit-memory"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "conduit-orchestrator"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "conduit-adapter-registry",
  "conduit-core",
+ "conduit-memory",
  "conduit-security",
  "conduit-tracker",
  "serde",

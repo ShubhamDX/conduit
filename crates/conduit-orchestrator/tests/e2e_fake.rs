@@ -64,6 +64,7 @@ async fn runs_one_issue_and_posts_summary() {
         workspace: ".".into(),
         assignee: "bot".into(),
         default_policy: SecurityPolicy::default(),
+        shared_memory: None,
     };
 
     run_one_issue(&tracker, &registry, &config, "I1")

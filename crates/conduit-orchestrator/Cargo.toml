@@ -9,6 +9,7 @@ repository.workspace = true
 async-trait = { workspace = true }
 conduit-adapter-registry = { path = "../conduit-adapter-registry" }
 conduit-core = { path = "../conduit-core" }
+conduit-memory = { path = "../conduit-memory" }
 conduit-security = { path = "../conduit-security" }
 conduit-tracker = { path = "../conduit-tracker" }
 serde = { workspace = true }

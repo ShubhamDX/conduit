@@ -6,6 +6,7 @@ members = [
     "crates/conduit-adapter-codex",
     "crates/conduit-adapter-claude",
     "crates/conduit-security",
+    "crates/conduit-memory",
     "crates/conduit-tracker",
     "crates/conduit-orchestrator",
     "crates/conduit-cli",

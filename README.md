@@ -8,11 +8,12 @@
 
 Upstream Symphony orchestrates Codex via a hardcoded `codex app-server` JSON-RPC client. Great if Codex is your only agent. Not great if you want to mix agents, compare them on the same issue, or add a new backend without patching the core.
 
-Conduit pulls three levers:
+Conduit pulls four levers:
 
 1. **`AgentAdapter` trait** — `start_session → event stream → stop_session`. Any backend that can talk JSON-RPC over stdio becomes an adapter.
 2. **Canonical `AgentEvent` enum** — every adapter maps its backend events into the same schema. The orchestrator sees one protocol.
 3. **Sandbox above the adapter** — macOS `sandbox-exec` / Linux `bwrap`+landlock + HTTP CONNECT egress allowlist proxy + rlimits + secret redaction. Every child process runs in the same jail regardless of backend.
+4. **Orchestrator-owned shared memory** — matching context is injected into prompts, and redacted run summaries are written back for later agents.
 
 Linear issue labels (`agent:codex`, `agent:claude-code`) route to the right adapter; workflow defaults cover the rest.
 
