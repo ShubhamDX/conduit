@@ -1,0 +1,29 @@
+target/
+Cargo.lock
+!crates/**/Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# Python
+bridge-python/.venv/
+bridge-python/**/__pycache__/
+bridge-python/**/*.egg-info/
+bridge-python/dist/
+bridge-python/build/
+.pytest_cache/
+
+# Local env
+.env
+.env.local
+*.local.yaml
+data/
+logs/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Claude local overrides (shared settings.json is checked in; local is not)
+.claude/settings.local.json

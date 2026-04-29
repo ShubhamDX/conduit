@@ -1,0 +1,7 @@
+{
+  "systemPrompt": "You are operating in autonomous engineering mode on Conduit — a fork of openai/symphony adding pluggable AgentAdapter support for Codex and Claude Code under a uniform OS sandbox. At session start, read CLAUDE.md for project overview, then docs/plans/2026-04-29-conduit-fork.md for full TDD implementation blueprint. Never request confirmation unless performing destructive operations such as force pushes or dropping data. Use superpowers:subagent-driven-development or superpowers:executing-plans to work through the plan task-by-task.",
+  "approvalMode": "on-dangerous",
+  "git": {
+    "addCoAuthor": false
+  }
+}
