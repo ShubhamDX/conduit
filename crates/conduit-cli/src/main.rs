@@ -8,6 +8,7 @@ use conduit_core::error::AdapterError;
 use conduit_memory::sqlite::SqliteMemoryStore;
 use conduit_memory::MemoryStore;
 use conduit_orchestrator::config::{load_workflow, AgentSpec, Workflow};
+use conduit_orchestrator::state::SqliteOrchestrationStore;
 use conduit_orchestrator::{run_one_issue, OrchestratorConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -134,11 +135,13 @@ async fn main() -> Result<()> {
             let workflow = load_workflow(&yaml).context("parse workflow")?;
             let registry = build_registry(&workflow);
             let shared_memory = build_memory_store(&workflow, &workflow_path)?;
+            let orchestration_store = build_orchestration_store(&workflow_path)?;
             let config = OrchestratorConfig {
                 workspace: workflow.workspace.clone(),
                 assignee: workflow.assignee.clone(),
                 default_policy: workflow.security.clone(),
                 shared_memory,
+                orchestration_store: Some(orchestration_store),
             };
             let issue_id = issue.context("--issue required in v0.1")?;
             let tracker_kind = tracker
@@ -156,11 +159,26 @@ async fn main() -> Result<()> {
             #[cfg(target_os = "macos")]
             check_dep("sandbox-exec");
             #[cfg(target_os = "linux")]
-            check_dep("bwrap");
+            {
+                check_dep("bwrap");
+                let check = conduit_security::sandbox_linux::probe_user_namespace();
+                if check.ok {
+                    println!("{}", check.message);
+                } else {
+                    println!("MISSING: {}", check.message);
+                }
+            }
             Ok(())
         }
         Command::MemoryMcp { socket } => memory_mcp::run(&socket).await,
     }
+}
+
+fn build_orchestration_store(workflow_path: &str) -> Result<Arc<SqliteOrchestrationStore>> {
+    let path = resolve_relative_to_workflow(workflow_path, Path::new(".conduit/orchestration.db"));
+    Ok(Arc::new(
+        SqliteOrchestrationStore::open(path).context("open sqlite orchestration store")?,
+    ))
 }
 
 fn default_memory_mcp_config() -> Option<MemoryMcpConfig> {

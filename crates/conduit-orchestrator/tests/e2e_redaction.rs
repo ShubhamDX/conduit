@@ -58,6 +58,7 @@ async fn redacts_transcript_before_posting_comment() {
         assignee: "bot".into(),
         default_policy: SecurityPolicy::default(),
         shared_memory: None,
+        orchestration_store: None,
     };
 
     run_one_issue(&tracker, &registry, &config, "I1")

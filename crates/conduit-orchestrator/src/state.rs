@@ -290,6 +290,38 @@ impl SqliteOrchestrationStore {
         select_run(&connection, &run_id)?.ok_or_else(|| StateError::Backend("run missing".into()))
     }
 
+    pub async fn finish_run(
+        &self,
+        run_id: &str,
+        status: RunStatus,
+    ) -> Result<RunRecord, StateError> {
+        let mut connection = self.connection.lock().await;
+        let transaction = connection.transaction().map_err(to_backend)?;
+        let task_id = select_run(&transaction, run_id)?
+            .ok_or_else(|| StateError::Backend(format!("run not found: {run_id}")))?
+            .task_id;
+        let now = unix_time_millis();
+        transaction
+            .execute(
+                r#"
+                UPDATE orchestration_runs
+                SET status = ?1, completed_at_ms = ?2
+                WHERE id = ?3
+                "#,
+                params![status.as_str(), now, run_id],
+            )
+            .map_err(to_backend)?;
+        transaction
+            .execute(
+                "UPDATE orchestration_tasks SET status = ?1, updated_at_ms = ?2 WHERE id = ?3",
+                params![task_status_for_run_status(&status).as_str(), now, task_id],
+            )
+            .map_err(to_backend)?;
+        transaction.commit().map_err(to_backend)?;
+
+        select_run(&connection, run_id)?.ok_or_else(|| StateError::Backend("run missing".into()))
+    }
+
     pub async fn record_event(
         &self,
         run_id: &str,
@@ -814,6 +846,15 @@ fn agent_event_type(event: &AgentEvent) -> String {
         AgentEvent::Error { .. } => "error",
     }
     .to_string()
+}
+
+fn task_status_for_run_status(status: &RunStatus) -> TaskStatus {
+    match status {
+        RunStatus::Running => TaskStatus::Running,
+        RunStatus::Succeeded => TaskStatus::Done,
+        RunStatus::Failed => TaskStatus::Failed,
+        RunStatus::Cancelled => TaskStatus::Cancelled,
+    }
 }
 
 fn placeholders(count: usize) -> String {
