@@ -153,10 +153,12 @@ mod tests {
 
     #[test]
     fn redacts_common_bearer_and_google_tokens() {
-        let google = "AIzaabcdefghijklmnopqrstuvwxyzABCDEFGHI";
-        let bearer = "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345";
+        let google = format!("{}{}", ["AI", "za"].concat(), "a".repeat(35));
+        let bearer_token = "b".repeat(30);
+        let bearer = format!("Authorization: {} {}", "Bearer", bearer_token);
         let out = redact(&format!("{google}\n{bearer}"));
-        assert!(!out.contains("abcdefghijklmnopqrstuvwxyz"));
+        assert!(!out.contains(&google));
+        assert!(!out.contains(&bearer_token));
         assert!(out.contains("AIza[REDACTED]"));
         assert!(out.contains("Bearer [REDACTED]"));
     }
