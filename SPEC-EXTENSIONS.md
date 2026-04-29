@@ -20,6 +20,8 @@ The default persisted store is SQLite via `memory.kind: sqlite`. Reads are limit
 
 For Claude Code, the Python bridge starts a run-scoped local MCP server named `conduit_memory`. Its MCP tools forward through a private Unix socket to the bridge, then through the child-to-parent JSON-RPC memory calls handled by the Rust stdio client. The raw SQLite file is never mounted or handed to the agent as a capability.
 
+For Codex, the adapter injects a run-scoped `mcp_servers.conduit_memory` config override into the `codex app-server` launch. That MCP server is the hidden `conduit memory-mcp` subcommand, which connects to a short-lived Unix socket owned by the adapter and forwards tool calls to the same orchestrator-scoped `MemoryToolProvider`.
+
 ## Required CI gates
 
 - `cargo test --workspace`

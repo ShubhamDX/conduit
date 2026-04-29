@@ -17,6 +17,7 @@ conduit-memory = { path = "../conduit-memory" }
 conduit-orchestrator = { path = "../conduit-orchestrator" }
 conduit-security = { path = "../conduit-security" }
 conduit-tracker = { path = "../conduit-tracker" }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

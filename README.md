@@ -13,7 +13,7 @@ Conduit pulls four levers:
 1. **`AgentAdapter` trait** — `start_session → event stream → stop_session`. Any backend that can talk JSON-RPC over stdio becomes an adapter.
 2. **Canonical `AgentEvent` enum** — every adapter maps its backend events into the same schema. The orchestrator sees one protocol.
 3. **Sandbox above the adapter** — macOS `sandbox-exec` / Linux `bwrap`+landlock + HTTP CONNECT egress allowlist proxy + rlimits + secret redaction. Every child process runs in the same jail regardless of backend.
-4. **Orchestrator-owned shared memory** — agents receive a scoped memory reference and request context on demand via `memory_search`, `memory_get`, and `memory_upsert`; Claude gets these as run-scoped MCP tools, and redacted run summaries are written back for later agents.
+4. **Orchestrator-owned shared memory** — agents receive a scoped memory reference and request context on demand via `memory_search`, `memory_get`, and `memory_upsert`; Codex and Claude get these as run-scoped MCP tools, and redacted run summaries are written back for later agents.
 
 Linear issue labels (`agent:codex`, `agent:claude-code`) route to the right adapter; workflow defaults cover the rest.
 

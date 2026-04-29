@@ -4,6 +4,7 @@ use conduit_core::adapter::{AgentAdapter, SecurityPolicy, SessionHandle, StartRe
 use conduit_core::error::AdapterError;
 use conduit_core::event::{AgentEvent, EndReason};
 use conduit_memory::memory::InMemoryStore;
+use conduit_memory::sqlite::SqliteMemoryStore;
 use conduit_memory::{MemoryEntry, MemoryStore};
 use conduit_orchestrator::{run_one_issue, OrchestratorConfig};
 use conduit_tracker::{fake::FakeTracker, Issue};
@@ -135,6 +136,81 @@ impl AgentAdapter for MemoryWritingAgent {
     }
 }
 
+struct TwoRunMemoryAgent {
+    second_prompt: Arc<Mutex<Option<String>>>,
+}
+
+#[async_trait]
+impl AgentAdapter for TwoRunMemoryAgent {
+    fn name(&self) -> &str {
+        "codex"
+    }
+
+    async fn start_session(&self, request: StartRequest) -> Result<SessionHandle, AdapterError> {
+        let scope = request
+            .memory
+            .as_ref()
+            .map(|memory| memory.scope.clone())
+            .unwrap_or_default();
+        if scope == "issue:I2" {
+            *self.second_prompt.lock().await = Some(request.prompt.clone());
+        }
+
+        let text = if let Some(memory_tools) = request.memory_tools {
+            if scope == "issue:I1" {
+                memory_tools
+                    .call(
+                        "memory_upsert",
+                        serde_json::json!({
+                            "key": "handoff",
+                            "value": "remembered from first run",
+                            "tags": ["handoff"]
+                        }),
+                    )
+                    .await
+                    .map_err(|error| AdapterError::Protocol(error.to_string()))?;
+                "wrote memory".to_string()
+            } else {
+                let result = memory_tools
+                    .call("memory_search", serde_json::json!({ "limit": 10 }))
+                    .await
+                    .map_err(|error| AdapterError::Protocol(error.to_string()))?;
+                result["entries"]
+                    .as_array()
+                    .and_then(|entries| {
+                        entries
+                            .iter()
+                            .find(|entry| entry["key"] == "handoff")
+                            .and_then(|entry| entry["value"].as_str())
+                    })
+                    .unwrap_or("missing memory")
+                    .to_string()
+            }
+        } else {
+            "no memory".to_string()
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            let _ = tx.send(AgentEvent::TokenDelta { text }).await;
+            let _ = tx
+                .send(AgentEvent::SessionEnded {
+                    reason: EndReason::Completed,
+                })
+                .await;
+        });
+
+        Ok(SessionHandle {
+            session_id: "two-run-memory".into(),
+            events: rx,
+        })
+    }
+
+    async fn stop_session(&self, _session_id: &str) -> Result<(), AdapterError> {
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn shares_memory_reference_without_injecting_contents() {
     let memory = Arc::new(InMemoryStore::new());
@@ -242,6 +318,76 @@ async fn memory_tool_upsert_is_scoped_and_redacted() {
     assert!(note.tags.contains(&"decision".to_string()));
     assert!(!note.value.contains("abc123"));
     assert!(note.value.contains("sk-proj-[REDACTED]"));
+}
+
+#[tokio::test]
+async fn sqlite_memory_persists_between_two_issue_runs_without_prompt_injection() {
+    let path = test_db_path("two-run-memory");
+    let first_memory: Arc<dyn MemoryStore> = Arc::new(SqliteMemoryStore::open(&path).unwrap());
+    let second_prompt = Arc::new(Mutex::new(None));
+    let tracker = FakeTracker::with(vec![
+        Issue {
+            id: "I1".into(),
+            title: "first".into(),
+            body: "write handoff".into(),
+            labels: vec!["agent:codex".into()],
+            assignee: Some("bot".into()),
+            state: "todo".into(),
+        },
+        Issue {
+            id: "I2".into(),
+            title: "second".into(),
+            body: "read handoff".into(),
+            labels: vec!["agent:codex".into()],
+            assignee: Some("bot".into()),
+            state: "todo".into(),
+        },
+    ]);
+    let mut registry = AdapterRegistry::new();
+    registry.insert(Box::new(TwoRunMemoryAgent {
+        second_prompt: Arc::clone(&second_prompt),
+    }));
+    registry.set_default("codex");
+
+    let first_config = OrchestratorConfig {
+        workspace: ".".into(),
+        assignee: "bot".into(),
+        default_policy: SecurityPolicy::default(),
+        shared_memory: Some(first_memory),
+    };
+    run_one_issue(&tracker, &registry, &first_config, "I1")
+        .await
+        .unwrap();
+
+    let second_memory: Arc<dyn MemoryStore> = Arc::new(SqliteMemoryStore::open(&path).unwrap());
+    let second_config = OrchestratorConfig {
+        workspace: ".".into(),
+        assignee: "bot".into(),
+        default_policy: SecurityPolicy::default(),
+        shared_memory: Some(second_memory),
+    };
+    run_one_issue(&tracker, &registry, &second_config, "I2")
+        .await
+        .unwrap();
+
+    let prompt = second_prompt.lock().await.clone().unwrap();
+    assert!(prompt.contains("Shared memory is available by capability reference."));
+    assert!(!prompt.contains("remembered from first run"));
+    let comments = tracker.comments().await;
+    assert!(comments
+        .iter()
+        .any(|(issue_id, body)| issue_id == "I2" && body == "remembered from first run"));
+}
+
+fn test_db_path(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "conduit-{label}-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
 }
 
 fn tracker() -> FakeTracker {

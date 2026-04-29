@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use conduit_adapter_claude::adapter::{ClaudeCodeAdapter, ClaudeConfig};
-use conduit_adapter_codex::adapter::{CodexAdapter, CodexConfig};
+use conduit_adapter_codex::adapter::{CodexAdapter, CodexConfig, MemoryMcpConfig};
 use conduit_adapter_registry::AdapterRegistry;
 use conduit_core::adapter::{AgentAdapter, SessionHandle, StartRequest};
 use conduit_core::error::AdapterError;
@@ -11,6 +11,8 @@ use conduit_orchestrator::config::{load_workflow, AgentSpec, Workflow};
 use conduit_orchestrator::{run_one_issue, OrchestratorConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+mod memory_mcp;
 
 #[derive(Parser)]
 #[command(name = "conduit")]
@@ -32,6 +34,11 @@ enum Command {
         issue: Option<String>,
     },
     Doctor,
+    #[command(hide = true)]
+    MemoryMcp {
+        #[arg(long)]
+        socket: PathBuf,
+    },
 }
 
 struct Renamed {
@@ -76,6 +83,7 @@ fn build_registry(workflow: &Workflow) -> AdapterRegistry {
                     program: program.clone(),
                     program_args: program_args.clone(),
                     model: model.clone(),
+                    memory_mcp: default_memory_mcp_config(),
                 });
                 registry.insert(Box::new(rename(adapter, name)));
             }
@@ -140,7 +148,16 @@ async fn main() -> Result<()> {
             check_dep("bwrap");
             Ok(())
         }
+        Command::MemoryMcp { socket } => memory_mcp::run(&socket).await,
     }
+}
+
+fn default_memory_mcp_config() -> Option<MemoryMcpConfig> {
+    let program = std::env::current_exe().ok()?;
+    Some(MemoryMcpConfig {
+        program: program.to_string_lossy().to_string(),
+        args: vec!["memory-mcp".into(), "--socket".into()],
+    })
 }
 
 fn build_memory_store(

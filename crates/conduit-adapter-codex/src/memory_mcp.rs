@@ -1,0 +1,137 @@
+use conduit_core::adapter::{MemoryToolError, MemoryToolProvider};
+use conduit_core::error::AdapterError;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::task::JoinHandle;
+use uuid::Uuid;
+
+pub struct MemoryMcpProxy {
+    socket_path: PathBuf,
+    task: JoinHandle<()>,
+}
+
+impl MemoryMcpProxy {
+    pub fn socket_path(&self) -> &Path {
+        &self.socket_path
+    }
+}
+
+impl Drop for MemoryMcpProxy {
+    fn drop(&mut self) {
+        self.task.abort();
+        let _ = std::fs::remove_file(&self.socket_path);
+    }
+}
+
+pub fn start_memory_mcp_proxy(
+    workspace: &Path,
+    memory_tools: Arc<dyn MemoryToolProvider>,
+) -> Result<MemoryMcpProxy, AdapterError> {
+    let runtime_dir = workspace.join(".c");
+    std::fs::create_dir_all(&runtime_dir)?;
+    let id = Uuid::new_v4().simple().to_string();
+    let socket_path = runtime_dir.join(format!("m-{}.sock", &id[..12]));
+    let listener = UnixListener::bind(&socket_path)?;
+    let task = tokio::spawn(serve(listener, memory_tools));
+
+    Ok(MemoryMcpProxy { socket_path, task })
+}
+
+async fn serve(listener: UnixListener, memory_tools: Arc<dyn MemoryToolProvider>) {
+    loop {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            break;
+        };
+        let memory_tools = Arc::clone(&memory_tools);
+        tokio::spawn(async move {
+            let _ = handle_stream(stream, memory_tools).await;
+        });
+    }
+}
+
+async fn handle_stream(
+    stream: UnixStream,
+    memory_tools: Arc<dyn MemoryToolProvider>,
+) -> Result<(), std::io::Error> {
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    let Some(line) = lines.next_line().await? else {
+        return Ok(());
+    };
+
+    let response = match serde_json::from_str::<serde_json::Value>(&line) {
+        Ok(payload) => {
+            let method = payload
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let params = payload
+                .get("params")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            match memory_tools.call(method, params).await {
+                Ok(result) => serde_json::json!({ "result": result }),
+                Err(error) => serde_json::json!({ "error": error.message }),
+            }
+        }
+        Err(error) => serde_json::json!({
+            "error": MemoryToolError::invalid_request(error.to_string()).message,
+        }),
+    };
+
+    let mut line = serde_json::to_string(&response).map_err(std::io::Error::other)?;
+    line.push('\n');
+    writer.write_all(line.as_bytes()).await?;
+    writer.flush().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FakeMemoryTools;
+
+    #[async_trait::async_trait]
+    impl MemoryToolProvider for FakeMemoryTools {
+        async fn call(
+            &self,
+            name: &str,
+            args: serde_json::Value,
+        ) -> Result<serde_json::Value, MemoryToolError> {
+            assert_eq!(name, "memory_get");
+            assert_eq!(args["key"], "k");
+            Ok(serde_json::json!({"entry": {"key": "k", "value": "v"}}))
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_forwards_unix_socket_calls_to_provider() {
+        let workspace = test_workspace("codex-memory-proxy");
+        let proxy = start_memory_mcp_proxy(&workspace, Arc::new(FakeMemoryTools)).unwrap();
+        let mut stream = UnixStream::connect(proxy.socket_path()).await.unwrap();
+        stream
+            .write_all(br#"{"method":"memory_get","params":{"key":"k"}}"#)
+            .await
+            .unwrap();
+        stream.write_all(b"\n").await.unwrap();
+
+        let mut lines = BufReader::new(stream).lines();
+        let response: serde_json::Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(response["result"]["entry"]["value"], "v");
+    }
+
+    fn test_workspace(label: &str) -> PathBuf {
+        let path = PathBuf::from("/tmp").join(format!(
+            "conduit-{label}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+}
