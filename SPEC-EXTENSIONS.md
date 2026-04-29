@@ -10,3 +10,11 @@ This fork adds:
 4. **Claude Code adapter** — new adapter backed by a Python bridge using `claude_agent_sdk`.
 
 Upstream compatibility: a workflow file with only a `codex:` block still works (maps to `agents: [{ name: codex, kind: codex }]`).
+
+## Required CI gates
+
+- `cargo test --workspace`
+- `cargo test -p conduit-security --test sandbox_deny_write`
+- `cargo test -p conduit-adapter-codex --test client_roundtrip`
+- `cargo test -p conduit-adapter-claude`
+- `cd bridge-python && pytest`
