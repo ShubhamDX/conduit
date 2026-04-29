@@ -72,6 +72,7 @@ async fn rejects_oversized_connect_headers() {
     assert!(response.starts_with("HTTP/1.1 431"));
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn policy_allowlist_starts_proxy_and_returns_proxy_env() {
     let policy = SecurityPolicy {
@@ -84,4 +85,14 @@ async fn policy_allowlist_starts_proxy_and_returns_proxy_env() {
     assert!(handle.is_some());
     assert!(env["HTTPS_PROXY"].starts_with("http://127.0.0.1:"));
     assert_eq!(env["HTTP_PROXY"], env["HTTPS_PROXY"]);
+}
+
+#[tokio::test]
+async fn empty_policy_does_not_start_proxy() {
+    let policy = SecurityPolicy::default();
+
+    let (env, handle) = start_proxy_for_policy(&policy).await.unwrap();
+
+    assert!(env.is_empty());
+    assert!(handle.is_none());
 }

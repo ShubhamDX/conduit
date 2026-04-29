@@ -60,7 +60,7 @@ mod tests {
     }
 
     #[test]
-    fn can_disable_network_namespace() {
+    fn can_unshare_network_namespace() {
         let args = build_bwrap_args(Path::new("/home/u/work"), true, true);
         assert!(args.iter().any(|arg| arg == "--unshare-net"));
     }

@@ -22,6 +22,10 @@ For Claude Code, the Python bridge starts a run-scoped local MCP server named `c
 
 For Codex, the adapter injects a run-scoped `mcp_servers.conduit_memory` config override into the `codex app-server` launch. That MCP server is the hidden `conduit memory-mcp` subcommand, which connects to a short-lived Unix socket owned by the adapter and forwards tool calls to the same orchestrator-scoped `MemoryToolProvider`.
 
+## Platform egress support
+
+macOS allowlisted egress is enforced by Seatbelt allowing agent networking only to the local CONNECT proxy. Linux currently fails closed for non-empty `egress_allowlist` policies: `bubblewrap` runs with `--unshare-net`, and Conduit refuses allowlisted network sessions until a namespace-safe proxy design exists. This avoids treating proxy environment variables as an enforcement boundary.
+
 ## Required CI gates
 
 - `cargo test --workspace`

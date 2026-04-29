@@ -44,12 +44,30 @@ pub async fn start_proxy(allowlist: Vec<String>) -> std::io::Result<(SocketAddr,
 pub async fn start_proxy_for_policy(
     policy: &SecurityPolicy,
 ) -> std::io::Result<(HashMap<String, String>, Option<ProxyHandle>)> {
+    validate_policy_supported(policy)?;
     if policy.egress_allowlist.is_empty() {
         return Ok((HashMap::new(), None));
     }
 
     let (addr, handle) = start_proxy(policy.egress_allowlist.clone()).await?;
     Ok((proxy_env(addr), Some(handle)))
+}
+
+pub fn validate_policy_supported(policy: &SecurityPolicy) -> std::io::Result<()> {
+    validate_policy_supported_for_os(policy, std::env::consts::OS)
+}
+
+fn validate_policy_supported_for_os(policy: &SecurityPolicy, os: &str) -> std::io::Result<()> {
+    if policy.egress_allowlist.is_empty() || os == "macos" {
+        return Ok(());
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!(
+            "egress allowlists are not enforceable on {os} with the current sandbox proxy design"
+        ),
+    ))
 }
 
 pub fn proxy_env(addr: SocketAddr) -> HashMap<String, String> {
@@ -190,7 +208,8 @@ fn host_allowed(host: &str, allowlist: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::host_allowed;
+    use super::{host_allowed, validate_policy_supported_for_os};
+    use conduit_core::adapter::SecurityPolicy;
 
     #[test]
     fn host_allowlist_matches_exact_and_subdomain() {
@@ -198,5 +217,30 @@ mod tests {
         assert!(host_allowed("example.com", &allowlist));
         assert!(host_allowed("api.example.com", &allowlist));
         assert!(!host_allowed("badexample.com", &allowlist));
+    }
+
+    #[test]
+    fn allowlisted_egress_is_supported_on_macos() {
+        let policy = SecurityPolicy {
+            egress_allowlist: vec!["api.openai.com".to_string()],
+            ..Default::default()
+        };
+        assert!(validate_policy_supported_for_os(&policy, "macos").is_ok());
+    }
+
+    #[test]
+    fn allowlisted_egress_fails_closed_on_linux() {
+        let policy = SecurityPolicy {
+            egress_allowlist: vec!["api.openai.com".to_string()],
+            ..Default::default()
+        };
+        let error = validate_policy_supported_for_os(&policy, "linux").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn empty_allowlist_is_supported_on_linux_as_no_network() {
+        let policy = SecurityPolicy::default();
+        assert!(validate_policy_supported_for_os(&policy, "linux").is_ok());
     }
 }
