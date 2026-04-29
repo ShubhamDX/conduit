@@ -1,0 +1,26 @@
+workspace: "./repo"
+assignee: "bot"
+default_agent: "codex"
+security:
+  egress_allowlist:
+    - "api.openai.com"
+    - "api.anthropic.com"
+  max_cpu_secs: 600
+  max_memory_bytes: 2147483648
+  max_open_files: 1024
+  workspace_writable: true
+  redact_secrets: true
+memory:
+  kind: sqlite
+  path: ".conduit/memory.db"
+agents:
+  - name: codex
+    kind: codex
+    program: "codex"
+    program_args: ["app-server"]
+    model: "gpt-5"
+  - name: claude-code
+    kind: claude
+    python: "python3"
+    bridge_args: ["-m", "conduit_bridge"]
+    model: "claude-sonnet-4-6"

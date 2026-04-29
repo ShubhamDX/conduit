@@ -1,0 +1,11 @@
+[package]
+name = "conduit-adapter-registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+conduit-core = { path = "../conduit-core" }
+thiserror = { workspace = true }

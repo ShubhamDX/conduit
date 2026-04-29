@@ -1,41 +1,47 @@
-# Symphony
+# Conduit
 
-Symphony turns project work into isolated, autonomous implementation runs, allowing teams to manage
-work instead of supervising coding agents.
+> Multi-agent orchestrator fork of [openai/symphony](https://github.com/openai/symphony) — drives **OpenAI Codex** and **Anthropic Claude Code** behind one uniform OS-level sandbox.
 
-[![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](.github/media/symphony-demo.mp4)
+**Status:** Pre-alpha. Plan drafted; implementation underway.
 
-_In this [demo video](.github/media/symphony-demo.mp4), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._
+## Why fork
 
-> [!WARNING]
-> Symphony is a low-key engineering preview for testing in trusted environments.
+Upstream Symphony orchestrates Codex via a hardcoded `codex app-server` JSON-RPC client. Great if Codex is your only agent. Not great if you want to mix agents, compare them on the same issue, or add a new backend without patching the core.
 
-## Running Symphony
+Conduit pulls four levers:
 
-### Requirements
+1. **`AgentAdapter` trait** — `start_session → event stream → stop_session`. Any backend that can talk JSON-RPC over stdio becomes an adapter.
+2. **Canonical `AgentEvent` enum** — every adapter maps its backend events into the same schema. The orchestrator sees one protocol.
+3. **Sandbox above the adapter** — macOS `sandbox-exec` / Linux `bwrap`+landlock + HTTP CONNECT egress allowlist proxy + rlimits + secret redaction. Every child process runs in the same jail regardless of backend.
+4. **Orchestrator-owned shared memory** — agents receive a scoped memory reference and request context on demand via `memory_search`, `memory_get`, and `memory_upsert`; Codex and Claude get these as run-scoped MCP tools, and redacted run summaries are written back for later agents.
 
-Symphony works best in codebases that have adopted
-[harness engineering](https://openai.com/index/harness-engineering/). Symphony is the next step --
-moving from managing coding agents to managing work that needs to get done.
+Linear issue labels (`agent:codex`, `agent:claude-code`) route to the right adapter; workflow defaults cover the rest.
 
-### Option 1. Make your own
+## Quickstart
 
-Tell your favorite coding agent to build Symphony in a programming language of your choice:
+```bash
+git clone https://github.com/<you>/conduit.git && cd conduit
+cargo build --workspace --release
+cd bridge-python && python -m pip install -e . && cd ..
+./target/release/conduit-cli doctor              # checks sandbox-exec/bwrap/codex/python3 on PATH
+./target/release/conduit-cli validate --workflow examples/workflow.yaml
+./target/release/conduit-cli run --workflow examples/workflow.yaml --issue I-123
+```
 
-> Implement Symphony according to the following spec:
-> https://github.com/openai/symphony/blob/main/SPEC.md
+## Security model
 
-### Option 2. Use our experimental reference implementation
+- Writes denied outside the declared workspace (Seatbelt/landlock).
+- Egress denied unless host matches `security.egress_allowlist`.
+- CPU/memory/fd caps via `setrlimit` before `exec`.
+- Regex redaction on every event before persistence/posting.
+- Approval gate on destructive tool calls (`on_write` default).
 
-Check out [elixir/README.md](elixir/README.md) for instructions on how to set up your environment
-and run the Elixir-based Symphony implementation. You can also ask your favorite coding agent to
-help with the setup:
+See [SPEC-EXTENSIONS.md](./SPEC-EXTENSIONS.md) for the full divergence from upstream.
 
-> Set up Symphony for my repository based on
-> https://github.com/openai/symphony/blob/main/elixir/README.md
+## Plan
 
----
+Implementation plan lives at `docs/plans/2026-04-29-conduit-fork.md`. Phases 0-9, TDD throughout.
 
 ## License
 
-This project is licensed under the [Apache License 2.0](LICENSE).
+Apache-2.0. Same as upstream Symphony.

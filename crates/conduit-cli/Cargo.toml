@@ -1,0 +1,23 @@
+[package]
+name = "conduit-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+conduit-adapter-claude = { path = "../conduit-adapter-claude" }
+conduit-adapter-codex = { path = "../conduit-adapter-codex" }
+conduit-adapter-registry = { path = "../conduit-adapter-registry" }
+conduit-core = { path = "../conduit-core" }
+conduit-memory = { path = "../conduit-memory" }
+conduit-orchestrator = { path = "../conduit-orchestrator" }
+conduit-security = { path = "../conduit-security" }
+conduit-tracker = { path = "../conduit-tracker" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

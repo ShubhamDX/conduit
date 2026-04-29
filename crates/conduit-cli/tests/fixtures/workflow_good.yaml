@@ -1,0 +1,12 @@
+
+workspace: "./repo"
+assignee: "bot"
+default_agent: "codex"
+security:
+  egress_allowlist: []
+  workspace_writable: true
+  redact_secrets: true
+agents:
+  - name: codex
+    kind: codex
+    program: codex
