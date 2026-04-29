@@ -18,6 +18,8 @@ Shared memory is mediated by the orchestrator, not the adapters. Before a run, t
 
 The default persisted store is SQLite via `memory.kind: sqlite`. Reads are limited to the current scope or entries sharing the capability tags, and writes are stored under the current scope after redaction. This keeps the security boundary simple: agents can benefit from shared context, but they do not own raw database access and cannot bypass redaction.
 
+For Claude Code, the Python bridge starts a run-scoped local MCP server named `conduit_memory`. Its MCP tools forward through a private Unix socket to the bridge, then through the child-to-parent JSON-RPC memory calls handled by the Rust stdio client. The raw SQLite file is never mounted or handed to the agent as a capability.
+
 ## Required CI gates
 
 - `cargo test --workspace`

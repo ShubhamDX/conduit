@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+import sys
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -15,25 +17,95 @@ async def run_turn(
     prompt: str,
     model: str | None,
     emit: Callable[[dict[str, Any]], Awaitable[None]],
+    memory: dict[str, Any] | None = None,
+    memory_socket: str | None = None,
 ) -> None:
     if ClaudeSDKClient is None:
         raise RuntimeError("claude-agent-sdk is not installed")
 
-    options = _options(workspace, model)
+    options = _options(workspace, model, memory, memory_socket)
     async with ClaudeSDKClient(options=options) as client:
-        await client.query(prompt)
+        await client.query(_prompt(prompt, memory))
         async for message in client.receive_response():
             await _emit_message(message, emit)
 
     await emit({"kind": "session_ended", "reason": "completed"})
 
 
-def _options(workspace: str, model: str | None) -> Any:
+def _options(
+    workspace: str,
+    model: str | None,
+    memory: dict[str, Any] | None = None,
+    memory_socket: str | None = None,
+) -> Any:
     if ClaudeAgentOptions is None:
         return None
+
+    kwargs: dict[str, Any] = {"cwd": workspace}
     if model:
-        return ClaudeAgentOptions(cwd=workspace, model=model)
-    return ClaudeAgentOptions(cwd=workspace)
+        kwargs["model"] = model
+    if memory and memory_socket:
+        kwargs["mcp_servers"] = {
+            "conduit_memory": {
+                "command": sys.executable,
+                "args": ["-m", "conduit_bridge.memory_mcp", memory_socket],
+            }
+        }
+        kwargs["allowed_tools"] = [
+            f"mcp__conduit_memory__{tool}"
+            for tool in memory.get("tools", [])
+            if isinstance(tool, str)
+        ]
+
+    required = ["mcp_servers"] if memory and memory_socket else []
+    return _build_options(kwargs, required)
+
+
+def _build_options(kwargs: dict[str, Any], required: list[str] | None = None) -> Any:
+    required = required or []
+    try:
+        signature = inspect.signature(ClaudeAgentOptions)
+    except (TypeError, ValueError):
+        return ClaudeAgentOptions(**kwargs)
+
+    if any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    ):
+        return ClaudeAgentOptions(**kwargs)
+
+    supported = {
+        key: value for key, value in kwargs.items() if key in signature.parameters
+    }
+    missing = [key for key in required if key not in supported]
+    if missing:
+        raise RuntimeError(
+            "claude-agent-sdk does not support required option(s): "
+            + ", ".join(missing)
+        )
+    return ClaudeAgentOptions(**supported)
+
+
+def _prompt(prompt: str, memory: dict[str, Any] | None = None) -> str:
+    if not memory:
+        return prompt
+
+    tools = [
+        f"mcp__conduit_memory__{tool}"
+        for tool in memory.get("tools", [])
+        if isinstance(tool, str)
+    ]
+    tool_text = ", ".join(tools) if tools else "none"
+    return (
+        "Shared memory tools are available through the Claude MCP server "
+        "`conduit_memory`.\n"
+        f"Scope: {memory.get('scope', '')}\n"
+        f"Tags: {', '.join(memory.get('tags', []))}\n"
+        f"Tools: {tool_text}\n"
+        "Use these tools only when extra context is needed; memory contents are "
+        "not preloaded in this prompt.\n\n"
+        f"{prompt}"
+    )
 
 
 async def _emit_message(
