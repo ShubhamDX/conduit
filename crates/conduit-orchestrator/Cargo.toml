@@ -12,9 +12,11 @@ conduit-core = { path = "../conduit-core" }
 conduit-memory = { path = "../conduit-memory" }
 conduit-security = { path = "../conduit-security" }
 conduit-tracker = { path = "../conduit-tracker" }
+rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+uuid = { version = "1", features = ["v4"] }

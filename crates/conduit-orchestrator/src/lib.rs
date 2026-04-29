@@ -18,6 +18,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 pub mod config;
+pub mod state;
 
 const MEMORY_TOOLS: &[&str] = &["memory_search", "memory_get", "memory_upsert"];
 const DEFAULT_MEMORY_LIMIT: usize = 8;

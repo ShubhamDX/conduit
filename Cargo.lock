@@ -262,12 +262,14 @@ dependencies = [
  "conduit-memory",
  "conduit-security",
  "conduit-tracker",
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
