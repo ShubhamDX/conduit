@@ -22,8 +22,8 @@ fn patterns() -> &'static [Pattern] {
                 replace: "sk-ant-[REDACTED]",
             },
             Pattern {
-                regex: Regex::new(r"\bsk-[A-Za-z0-9_-]{20,}([^A-Za-z0-9_-]|$)").unwrap(),
-                replace: "sk-[REDACTED]$1",
+                regex: Regex::new(r"\bsk-[A-Za-z0-9_-]{20,}").unwrap(),
+                replace: "sk-[REDACTED]",
             },
             Pattern {
                 regex: Regex::new(r"AKIA[0-9A-Z]{16}").unwrap(),
@@ -144,6 +144,15 @@ mod tests {
         let out = redact(input);
         assert!(!out.contains("abc_def"));
         assert!(out.contains("sk-[REDACTED]."));
+    }
+
+    #[test]
+    fn redacts_consecutive_generic_sk_keys() {
+        let input = "sk-aaaaaaaaaaaaaaaaaaaaaaaa sk-bbbbbbbbbbbbbbbbbbbbbbbb";
+        let out = redact(input);
+        assert!(!out.contains("aaaaaaaa"));
+        assert!(!out.contains("bbbbbbbb"));
+        assert_eq!(out, "sk-[REDACTED] sk-[REDACTED]");
     }
 
     #[test]

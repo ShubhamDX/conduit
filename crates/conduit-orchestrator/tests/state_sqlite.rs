@@ -97,6 +97,7 @@ async fn sqlite_state_records_approvals_and_messages_for_control_surfaces() {
     assert!(second_resolution
         .to_string()
         .contains("approval already resolved"));
+    assert!(second_resolution.to_string().contains("requested denied"));
 
     let snapshot = store.task_snapshot("task-2").await.unwrap().unwrap();
     assert_eq!(snapshot.approvals[0].status, "approved");

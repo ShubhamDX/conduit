@@ -373,9 +373,10 @@ impl SqliteOrchestrationStore {
         approval_id: &str,
         decision: ApprovalDecision,
     ) -> Result<ApprovalRecord, StateError> {
-        let connection = self.connection.lock().await;
+        let mut connection = self.connection.lock().await;
+        let transaction = connection.transaction().map_err(to_backend)?;
         let now = unix_time_millis();
-        let updated = connection
+        let updated = transaction
             .execute(
                 r#"
                 UPDATE orchestration_approvals
@@ -386,19 +387,27 @@ impl SqliteOrchestrationStore {
             )
             .map_err(to_backend)?;
         if updated == 0 {
-            let Some(existing) = select_approval(&connection, approval_id)? else {
+            let Some(existing) = select_approval(&transaction, approval_id)? else {
                 return Err(StateError::Backend(format!(
-                    "approval not found: {approval_id}"
+                    "approval not found while resolving {}: {approval_id}",
+                    decision.as_str()
                 )));
             };
             return Err(StateError::Backend(format!(
-                "approval already resolved: {approval_id} ({})",
-                existing.status
+                "approval already resolved: {approval_id} ({}; requested {})",
+                existing.status,
+                decision.as_str()
             )));
         }
 
-        select_approval(&connection, approval_id)?
-            .ok_or_else(|| StateError::Backend(format!("approval not found: {approval_id}")))
+        let approval = select_approval(&transaction, approval_id)?.ok_or_else(|| {
+            StateError::Backend(format!(
+                "approval not found after resolving {}: {approval_id}",
+                decision.as_str()
+            ))
+        })?;
+        transaction.commit().map_err(to_backend)?;
+        Ok(approval)
     }
 
     pub async fn record_message(&self, message: NewMessage) -> Result<MessageRecord, StateError> {
