@@ -240,6 +240,7 @@ async fn shares_memory_reference_without_injecting_contents() {
         assignee: "bot".into(),
         default_policy: SecurityPolicy::default(),
         shared_memory: Some(shared_memory),
+        orchestration_store: None,
     };
 
     run_one_issue(&tracker, &registry, &config, "I1")
@@ -276,6 +277,7 @@ async fn writes_redacted_summary_to_shared_memory() {
         assignee: "bot".into(),
         default_policy: SecurityPolicy::default(),
         shared_memory: Some(shared_memory),
+        orchestration_store: None,
     };
 
     run_one_issue(&tracker, &registry, &config, "I1")
@@ -302,6 +304,7 @@ async fn memory_tool_upsert_is_scoped_and_redacted() {
         assignee: "bot".into(),
         default_policy: SecurityPolicy::default(),
         shared_memory: Some(shared_memory),
+        orchestration_store: None,
     };
 
     run_one_issue(&tracker, &registry, &config, "I1")
@@ -356,6 +359,7 @@ async fn sqlite_memory_persists_between_two_issue_runs_without_prompt_injection(
         assignee: "bot".into(),
         default_policy: SecurityPolicy::default(),
         shared_memory: Some(first_memory),
+        orchestration_store: None,
     };
     run_one_issue(&tracker, &registry, &first_config, "I1")
         .await
@@ -367,6 +371,7 @@ async fn sqlite_memory_persists_between_two_issue_runs_without_prompt_injection(
         assignee: "bot".into(),
         default_policy: SecurityPolicy::default(),
         shared_memory: Some(second_memory),
+        orchestration_store: None,
     };
     run_one_issue(&tracker, &registry, &second_config, "I2")
         .await

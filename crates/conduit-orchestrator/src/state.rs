@@ -290,6 +290,38 @@ impl SqliteOrchestrationStore {
         select_run(&connection, &run_id)?.ok_or_else(|| StateError::Backend("run missing".into()))
     }
 
+    pub async fn finish_run(
+        &self,
+        run_id: &str,
+        status: RunStatus,
+    ) -> Result<RunRecord, StateError> {
+        let mut connection = self.connection.lock().await;
+        let transaction = connection.transaction().map_err(to_backend)?;
+        let task_id = select_run(&transaction, run_id)?
+            .ok_or_else(|| StateError::Backend(format!("run not found: {run_id}")))?
+            .task_id;
+        let now = unix_time_millis();
+        transaction
+            .execute(
+                r#"
+                UPDATE orchestration_runs
+                SET status = ?1, completed_at_ms = ?2
+                WHERE id = ?3
+                "#,
+                params![status.as_str(), now, run_id],
+            )
+            .map_err(to_backend)?;
+        transaction
+            .execute(
+                "UPDATE orchestration_tasks SET status = ?1, updated_at_ms = ?2 WHERE id = ?3",
+                params![task_status_for_run_status(&status).as_str(), now, task_id],
+            )
+            .map_err(to_backend)?;
+        transaction.commit().map_err(to_backend)?;
+
+        select_run(&connection, run_id)?.ok_or_else(|| StateError::Backend("run missing".into()))
+    }
+
     pub async fn record_event(
         &self,
         run_id: &str,
@@ -466,6 +498,29 @@ impl SqliteOrchestrationStore {
             messages,
         }))
     }
+
+    pub async fn task_snapshots(&self) -> Result<Vec<TaskSnapshot>, StateError> {
+        let connection = self.connection.lock().await;
+        let tasks = select_tasks(&connection)?;
+        let mut snapshots = Vec::with_capacity(tasks.len());
+
+        for task in tasks {
+            let runs = select_runs_for_task(&connection, &task.id)?;
+            let run_ids = runs.iter().map(|run| run.id.as_str()).collect::<Vec<_>>();
+            let events = select_events_for_runs(&connection, &run_ids)?;
+            let approvals = select_approvals_for_runs(&connection, &run_ids)?;
+            let messages = select_messages_for_task(&connection, &task.id)?;
+            snapshots.push(TaskSnapshot {
+                task,
+                runs,
+                events,
+                approvals,
+                messages,
+            });
+        }
+
+        Ok(snapshots)
+    }
 }
 
 fn initialize_schema(connection: &Connection) -> Result<(), StateError> {
@@ -556,6 +611,24 @@ fn select_task(connection: &Connection, task_id: &str) -> Result<Option<TaskReco
         )
         .optional()
         .map_err(to_backend)
+}
+
+fn select_tasks(connection: &Connection) -> Result<Vec<TaskRecord>, StateError> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT id, source, title, body, labels_json, status, created_at_ms, updated_at_ms
+            FROM orchestration_tasks
+            ORDER BY created_at_ms, id
+            "#,
+        )
+        .map_err(to_backend)?;
+    let rows = statement
+        .query_map([], task_row)
+        .map_err(to_backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(to_backend)?;
+    Ok(rows)
 }
 
 fn select_run(connection: &Connection, run_id: &str) -> Result<Option<RunRecord>, StateError> {
@@ -814,6 +887,15 @@ fn agent_event_type(event: &AgentEvent) -> String {
         AgentEvent::Error { .. } => "error",
     }
     .to_string()
+}
+
+fn task_status_for_run_status(status: &RunStatus) -> TaskStatus {
+    match status {
+        RunStatus::Running => TaskStatus::Running,
+        RunStatus::Succeeded => TaskStatus::Done,
+        RunStatus::Failed => TaskStatus::Failed,
+        RunStatus::Cancelled => TaskStatus::Cancelled,
+    }
 }
 
 fn placeholders(count: usize) -> String {

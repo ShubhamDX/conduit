@@ -5,7 +5,7 @@ use conduit_core::adapter::{
     ApprovalMode, MemoryCapability, MemoryToolError, MemoryToolProvider, SecurityPolicy,
     StartRequest,
 };
-use conduit_core::event::AgentEvent;
+use conduit_core::event::{AgentEvent, EndReason};
 use conduit_memory::{MemoryEntry, MemoryError, MemoryQuery, MemoryStore};
 use conduit_security::redact::{redact, redact_event};
 use conduit_tracker::Issue;
@@ -19,6 +19,12 @@ use thiserror::Error;
 
 pub mod config;
 pub mod state;
+pub mod trace_export;
+
+use state::{
+    MessageDirection, NewMessage, NewTask, RunRecord, RunStatus, SqliteOrchestrationStore,
+    StateError,
+};
 
 const MEMORY_TOOLS: &[&str] = &["memory_search", "memory_get", "memory_upsert"];
 const DEFAULT_MEMORY_LIMIT: usize = 8;
@@ -34,6 +40,8 @@ pub enum OrchError {
     Adapter(#[from] conduit_core::error::AdapterError),
     #[error("memory: {0}")]
     Memory(#[from] MemoryError),
+    #[error("state: {0}")]
+    State(#[from] StateError),
     #[error("issue not found: {0}")]
     NotFound(String),
 }
@@ -43,6 +51,7 @@ pub struct OrchestratorConfig {
     pub assignee: String,
     pub default_policy: SecurityPolicy,
     pub shared_memory: Option<Arc<dyn MemoryStore>>,
+    pub orchestration_store: Option<Arc<SqliteOrchestrationStore>>,
 }
 
 pub async fn run_one_issue(
@@ -58,6 +67,7 @@ pub async fn run_one_issue(
         .ok_or_else(|| OrchError::NotFound(issue_id.to_string()))?;
 
     let adapter = registry.route(&issue.labels)?;
+    let ledger_run = start_ledger_run(config, &issue, adapter.name()).await?;
     tracker.set_state(issue_id, "in_progress").await?;
     let memory_capability = memory_capability(config, issue_id, &issue.labels);
     let memory_tools = memory_tools(config, memory_capability.as_ref());
@@ -72,8 +82,17 @@ pub async fn run_one_issue(
         memory_tools,
         env: HashMap::new(),
     };
-    let mut handle = adapter.start_session(request).await?;
+    let mut handle = match adapter.start_session(request).await {
+        Ok(handle) => handle,
+        Err(error) => {
+            if let Some(run) = &ledger_run {
+                finish_ledger_run(config, &run.id, RunStatus::Failed).await?;
+            }
+            return Err(error.into());
+        }
+    };
     let mut transcript = String::new();
+    let mut final_status = RunStatus::Succeeded;
 
     while let Some(event) = handle.events.recv().await {
         let event = if config.default_policy.redact_secrets {
@@ -81,10 +100,20 @@ pub async fn run_one_issue(
         } else {
             event
         };
+        if let Some(run) = &ledger_run {
+            record_ledger_event(config, &run.id, event.clone()).await?;
+            if let AgentEvent::ApprovalRequested { reason, risk, .. } = &event {
+                record_ledger_approval(config, &run.id, reason, risk.clone()).await?;
+            }
+        }
         match event {
             AgentEvent::TokenDelta { text } => transcript.push_str(&text),
-            AgentEvent::SessionEnded { .. } => break,
+            AgentEvent::SessionEnded { reason } => {
+                final_status = run_status_for_end_reason(&reason);
+                break;
+            }
             AgentEvent::Error { message, .. } => {
+                final_status = RunStatus::Failed;
                 transcript.push_str(&format!("\n[error] {message}"));
             }
             _ => {}
@@ -97,9 +126,97 @@ pub async fn run_one_issue(
         transcript
     };
     tracker.post_comment(issue_id, &summary).await?;
+    if let Some(run) = &ledger_run {
+        record_ledger_message(config, issue_id, &run.id, &summary).await?;
+        finish_ledger_run(config, &run.id, final_status).await?;
+    }
     write_memory(config, issue_id, &issue.labels, &summary).await?;
     tracker.set_state(issue_id, "done").await?;
     Ok(())
+}
+
+async fn start_ledger_run(
+    config: &OrchestratorConfig,
+    issue: &Issue,
+    agent: &str,
+) -> Result<Option<RunRecord>, OrchError> {
+    let Some(store) = &config.orchestration_store else {
+        return Ok(None);
+    };
+
+    store
+        .create_task(NewTask {
+            id: issue.id.clone(),
+            source: "tracker".into(),
+            title: issue.title.clone(),
+            body: issue.body.clone(),
+            labels: issue.labels.clone(),
+        })
+        .await?;
+    Ok(Some(store.start_run(&issue.id, agent).await?))
+}
+
+async fn record_ledger_event(
+    config: &OrchestratorConfig,
+    run_id: &str,
+    event: AgentEvent,
+) -> Result<(), OrchError> {
+    if let Some(store) = &config.orchestration_store {
+        store.record_event(run_id, event).await?;
+    }
+    Ok(())
+}
+
+async fn record_ledger_approval(
+    config: &OrchestratorConfig,
+    run_id: &str,
+    reason: &str,
+    risk: conduit_core::event::Risk,
+) -> Result<(), OrchError> {
+    if let Some(store) = &config.orchestration_store {
+        store.request_approval(run_id, reason, risk).await?;
+    }
+    Ok(())
+}
+
+async fn record_ledger_message(
+    config: &OrchestratorConfig,
+    issue_id: &str,
+    run_id: &str,
+    body: &str,
+) -> Result<(), OrchError> {
+    if let Some(store) = &config.orchestration_store {
+        store
+            .record_message(NewMessage {
+                task_id: Some(issue_id.to_string()),
+                run_id: Some(run_id.to_string()),
+                channel: "tracker".into(),
+                sender: "orchestrator".into(),
+                direction: MessageDirection::Outbound,
+                body: body.to_string(),
+            })
+            .await?;
+    }
+    Ok(())
+}
+
+async fn finish_ledger_run(
+    config: &OrchestratorConfig,
+    run_id: &str,
+    status: RunStatus,
+) -> Result<(), OrchError> {
+    if let Some(store) = &config.orchestration_store {
+        store.finish_run(run_id, status).await?;
+    }
+    Ok(())
+}
+
+fn run_status_for_end_reason(reason: &EndReason) -> RunStatus {
+    match reason {
+        EndReason::Completed => RunStatus::Succeeded,
+        EndReason::Cancelled => RunStatus::Cancelled,
+        EndReason::Failed | EndReason::Timeout => RunStatus::Failed,
+    }
 }
 
 fn memory_capability(

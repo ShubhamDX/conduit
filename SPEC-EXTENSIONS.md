@@ -28,7 +28,9 @@ macOS allowlisted egress is enforced by Seatbelt denying network access by defau
 
 ## Durable orchestration state
 
-Conduit owns a SQLite orchestration ledger for control-plane integrations such as Hermes, dashboards, Jira-style boards, Telegram, and future work sources. The ledger records tasks, runs, redacted agent events, approval requests, and control-surface messages. External companions or dashboards should read and write this normalized state instead of driving agent adapters directly; sandboxed execution still flows through the orchestrator and adapter registry. The current single-issue `run_one_issue` path has not been wired to the ledger yet; that wiring is the next orchestration phase after the store API settles.
+Conduit owns a SQLite orchestration ledger for control-plane integrations such as Hermes, dashboards, Jira-style boards, Telegram, and future work sources. The ledger records tasks, runs, redacted agent events, approval requests, and control-surface messages. External companions or dashboards should read and write this normalized state instead of driving agent adapters directly; sandboxed execution still flows through the orchestrator and adapter registry. The single-issue `run_one_issue` path writes to the ledger when an `SqliteOrchestrationStore` is configured; the CLI opens `.conduit/orchestration.db` beside the workflow file by default.
+
+The ledger is also the trace substrate for offline harness optimization. `conduit trace export` emits OpenTelemetry-shaped JSONL for HALO-style analysis: one trace per run, with AGENT, LLM, TOOL, GUARDRAIL, and CHAIN spans derived from canonical Conduit records. Export is read-only and redacts strings again at the boundary, including task metadata, labels, tool input/output, approvals, and messages. Optimizer findings are advisory; runtime orchestration, approvals, sandboxing, and code changes remain under Conduit/Hermes control.
 
 ## Required CI gates
 
