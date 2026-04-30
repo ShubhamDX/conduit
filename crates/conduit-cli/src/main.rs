@@ -9,7 +9,9 @@ use conduit_memory::sqlite::SqliteMemoryStore;
 use conduit_memory::MemoryStore;
 use conduit_orchestrator::config::{load_workflow, AgentSpec, Workflow};
 use conduit_orchestrator::state::SqliteOrchestrationStore;
+use conduit_orchestrator::trace_export::{export_halo_spans, HaloExportOptions};
 use conduit_orchestrator::{run_one_issue, OrchestratorConfig};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -37,10 +39,36 @@ enum Command {
         tracker: Option<String>,
     },
     Doctor,
+    Trace {
+        #[command(subcommand)]
+        command: TraceCommand,
+    },
     #[command(hide = true)]
     MemoryMcp {
         #[arg(long)]
         socket: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum TraceCommand {
+    Export {
+        #[arg(long)]
+        state: Option<PathBuf>,
+        #[arg(long)]
+        workflow: Option<String>,
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value = "conduit")]
+        project_id: String,
+        #[arg(long, default_value = "conduit")]
+        service_name: String,
+        #[arg(long)]
+        service_version: Option<String>,
+        #[arg(long)]
+        deployment_environment: Option<String>,
     },
 }
 
@@ -170,8 +198,90 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Trace { command } => match command {
+            TraceCommand::Export {
+                state,
+                workflow,
+                task,
+                out,
+                project_id,
+                service_name,
+                service_version,
+                deployment_environment,
+            } => {
+                export_trace_command(
+                    state,
+                    workflow.as_deref(),
+                    task.as_deref(),
+                    out,
+                    HaloExportOptions {
+                        project_id,
+                        service_name,
+                        service_version,
+                        deployment_environment,
+                    },
+                )
+                .await
+            }
+        },
         Command::MemoryMcp { socket } => memory_mcp::run(&socket).await,
     }
+}
+
+async fn export_trace_command(
+    state: Option<PathBuf>,
+    workflow: Option<&str>,
+    task: Option<&str>,
+    out: Option<PathBuf>,
+    options: HaloExportOptions,
+) -> Result<()> {
+    let state_path = resolve_orchestration_state_path(state, workflow);
+    if !state_path.exists() {
+        anyhow::bail!("orchestration store not found: {}", state_path.display());
+    }
+    let store = SqliteOrchestrationStore::open(&state_path).with_context(|| {
+        format!(
+            "open sqlite orchestration store at {}",
+            state_path.display()
+        )
+    })?;
+    let snapshots = match task {
+        Some(task_id) => {
+            let snapshot = store
+                .task_snapshot(task_id)
+                .await
+                .context("read task snapshot")?
+                .with_context(|| format!("task not found in orchestration store: {task_id}"))?;
+            vec![snapshot]
+        }
+        None => store
+            .task_snapshots()
+            .await
+            .context("read task snapshots")?,
+    };
+    let spans = export_halo_spans(&snapshots, &options);
+
+    let mut writer: Box<dyn Write> = match out {
+        Some(path) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("create trace export directory {}", parent.display())
+                })?;
+            }
+            Box::new(
+                std::fs::File::create(&path)
+                    .with_context(|| format!("create trace export {}", path.display()))?,
+            )
+        }
+        None => Box::new(std::io::stdout()),
+    };
+
+    for span in spans {
+        serde_json::to_writer(&mut writer, &span).context("encode halo trace span")?;
+        writer.write_all(b"\n").context("write halo trace span")?;
+    }
+    writer.flush().context("flush halo trace export")?;
+    Ok(())
 }
 
 fn build_orchestration_store(workflow_path: &str) -> Result<Arc<SqliteOrchestrationStore>> {
@@ -217,6 +327,16 @@ fn resolve_relative_to_workflow(workflow_path: &str, path: &Path) -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(path)
+}
+
+fn resolve_orchestration_state_path(state: Option<PathBuf>, workflow: Option<&str>) -> PathBuf {
+    match (state, workflow) {
+        (Some(path), _) => path,
+        (None, Some(workflow_path)) => {
+            resolve_relative_to_workflow(workflow_path, Path::new(".conduit/orchestration.db"))
+        }
+        (None, None) => PathBuf::from(".conduit/orchestration.db"),
+    }
 }
 
 fn check_dep(binary: &str) {

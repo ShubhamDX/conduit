@@ -19,6 +19,7 @@ use thiserror::Error;
 
 pub mod config;
 pub mod state;
+pub mod trace_export;
 
 use state::{
     MessageDirection, NewMessage, NewTask, RunRecord, RunStatus, SqliteOrchestrationStore,

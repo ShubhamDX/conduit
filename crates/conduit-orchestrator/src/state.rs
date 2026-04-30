@@ -498,6 +498,29 @@ impl SqliteOrchestrationStore {
             messages,
         }))
     }
+
+    pub async fn task_snapshots(&self) -> Result<Vec<TaskSnapshot>, StateError> {
+        let connection = self.connection.lock().await;
+        let tasks = select_tasks(&connection)?;
+        let mut snapshots = Vec::with_capacity(tasks.len());
+
+        for task in tasks {
+            let runs = select_runs_for_task(&connection, &task.id)?;
+            let run_ids = runs.iter().map(|run| run.id.as_str()).collect::<Vec<_>>();
+            let events = select_events_for_runs(&connection, &run_ids)?;
+            let approvals = select_approvals_for_runs(&connection, &run_ids)?;
+            let messages = select_messages_for_task(&connection, &task.id)?;
+            snapshots.push(TaskSnapshot {
+                task,
+                runs,
+                events,
+                approvals,
+                messages,
+            });
+        }
+
+        Ok(snapshots)
+    }
 }
 
 fn initialize_schema(connection: &Connection) -> Result<(), StateError> {
@@ -588,6 +611,24 @@ fn select_task(connection: &Connection, task_id: &str) -> Result<Option<TaskReco
         )
         .optional()
         .map_err(to_backend)
+}
+
+fn select_tasks(connection: &Connection) -> Result<Vec<TaskRecord>, StateError> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT id, source, title, body, labels_json, status, created_at_ms, updated_at_ms
+            FROM orchestration_tasks
+            ORDER BY created_at_ms, id
+            "#,
+        )
+        .map_err(to_backend)?;
+    let rows = statement
+        .query_map([], task_row)
+        .map_err(to_backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(to_backend)?;
+    Ok(rows)
 }
 
 fn select_run(connection: &Connection, run_id: &str) -> Result<Option<RunRecord>, StateError> {
