@@ -9,8 +9,8 @@ use conduit_memory::sqlite::SqliteMemoryStore;
 use conduit_memory::MemoryStore;
 use conduit_orchestrator::config::{load_workflow, AgentSpec, Workflow};
 use conduit_orchestrator::state::{
-    ApprovalDecision, ApprovalRecord, RunSnapshot, SqliteOrchestrationStore, TaskRecord,
-    TaskSnapshot,
+    ApprovalDecision, ApprovalRecord, BoardCardRecord, BoardColumn, NewBoardAssignment,
+    NewBoardCard, RunSnapshot, SqliteOrchestrationStore, TaskRecord, TaskSnapshot,
 };
 use conduit_orchestrator::trace_export::{export_halo_spans, HaloExportOptions};
 use conduit_orchestrator::{run_one_issue, OrchestratorConfig};
@@ -53,6 +53,10 @@ enum Command {
     Approval {
         #[command(subcommand)]
         command: ApprovalCommand,
+    },
+    Board {
+        #[command(subcommand)]
+        command: BoardCommand,
     },
     Trace {
         #[command(subcommand)]
@@ -126,6 +130,71 @@ enum ApprovalCommand {
         state: Option<PathBuf>,
         #[arg(long)]
         workflow: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum BoardCommand {
+    List {
+        #[arg(long)]
+        state: Option<PathBuf>,
+        #[arg(long)]
+        workflow: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Show {
+        id: String,
+        #[arg(long)]
+        state: Option<PathBuf>,
+        #[arg(long)]
+        workflow: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Create {
+        #[arg(long)]
+        state: Option<PathBuf>,
+        #[arg(long)]
+        workflow: Option<String>,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        body: String,
+        #[arg(long = "label")]
+        labels: Vec<String>,
+        #[arg(long, default_value = "ideas")]
+        column: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Move {
+        id: String,
+        #[arg(long)]
+        state: Option<PathBuf>,
+        #[arg(long)]
+        workflow: Option<String>,
+        #[arg(long)]
+        column: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Assign {
+        id: String,
+        #[arg(long)]
+        state: Option<PathBuf>,
+        #[arg(long)]
+        workflow: Option<String>,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        role: String,
+        #[arg(long)]
+        model: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -287,6 +356,7 @@ async fn main() -> Result<()> {
         }
         Command::Task { command } => handle_task_command(command).await,
         Command::Approval { command } => handle_approval_command(command).await,
+        Command::Board { command } => handle_board_command(command).await,
         Command::Trace { command } => match command {
             TraceCommand::Export {
                 state,
@@ -314,6 +384,114 @@ async fn main() -> Result<()> {
             }
         },
         Command::MemoryMcp { socket } => memory_mcp::run(&socket).await,
+    }
+}
+
+async fn handle_board_command(command: BoardCommand) -> Result<()> {
+    match command {
+        BoardCommand::List {
+            state,
+            workflow,
+            json,
+        } => {
+            let store = open_existing_orchestration_store(state, workflow.as_deref())?;
+            let cards = store.board_cards().await.context("read board cards")?;
+            if json {
+                write_json(&cards)
+            } else {
+                print_board_cards(&cards);
+                Ok(())
+            }
+        }
+        BoardCommand::Show {
+            id,
+            state,
+            workflow,
+            json,
+        } => {
+            let store = open_existing_orchestration_store(state, workflow.as_deref())?;
+            let card = store
+                .board_card(&id)
+                .await
+                .context("read board card")?
+                .with_context(|| format!("board card not found: {id}"))?;
+            if json {
+                write_json(&card)
+            } else {
+                print_board_card(&card);
+                Ok(())
+            }
+        }
+        BoardCommand::Create {
+            state,
+            workflow,
+            id,
+            title,
+            body,
+            labels,
+            column,
+            json,
+        } => {
+            let store = open_or_create_orchestration_store(state, workflow.as_deref())?;
+            let column = parse_board_column(&column)?;
+            let card = store
+                .create_board_card(NewBoardCard {
+                    id,
+                    title,
+                    body,
+                    labels,
+                    column,
+                })
+                .await
+                .context("create board card")?;
+            if json {
+                write_json(&card)
+            } else {
+                print_board_card(&card);
+                Ok(())
+            }
+        }
+        BoardCommand::Move {
+            id,
+            state,
+            workflow,
+            column,
+            json,
+        } => {
+            let store = open_existing_orchestration_store(state, workflow.as_deref())?;
+            let column = parse_board_column(&column)?;
+            let card = store
+                .move_board_card(&id, column)
+                .await
+                .context("move board card")?;
+            if json {
+                write_json(&card)
+            } else {
+                print_board_card(&card);
+                Ok(())
+            }
+        }
+        BoardCommand::Assign {
+            id,
+            state,
+            workflow,
+            agent,
+            role,
+            model,
+            json,
+        } => {
+            let store = open_existing_orchestration_store(state, workflow.as_deref())?;
+            let card = store
+                .assign_board_card(&id, NewBoardAssignment { agent, role, model })
+                .await
+                .context("assign board card")?;
+            if json {
+                write_json(&card)
+            } else {
+                print_board_card(&card);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -524,6 +702,19 @@ fn open_existing_orchestration_store(
     })
 }
 
+fn open_or_create_orchestration_store(
+    state: Option<PathBuf>,
+    workflow: Option<&str>,
+) -> Result<SqliteOrchestrationStore> {
+    let state_path = resolve_orchestration_state_path(state, workflow);
+    SqliteOrchestrationStore::open(&state_path).with_context(|| {
+        format!(
+            "open sqlite orchestration store at {}",
+            state_path.display()
+        )
+    })
+}
+
 fn write_json<T: Serialize>(value: &T) -> Result<()> {
     let mut stdout = std::io::stdout();
     let value = serde_json::to_value(value).context("encode json output")?;
@@ -531,6 +722,22 @@ fn write_json<T: Serialize>(value: &T) -> Result<()> {
     serde_json::to_writer_pretty(&mut stdout, &value).context("write json output")?;
     stdout.write_all(b"\n").context("write json output")?;
     stdout.flush().context("flush json output")
+}
+
+fn print_board_cards(cards: &[BoardCardRecord]) {
+    for card in cards {
+        print_board_card(card);
+    }
+}
+
+fn print_board_card(card: &BoardCardRecord) {
+    println!(
+        "{}\t{}\t{}\tassignments:{}",
+        redact(&card.task.id),
+        card.column.as_str(),
+        redact(&card.task.title),
+        card.assignments.len()
+    );
 }
 
 fn print_task_list(tasks: &[TaskRecord]) {
@@ -648,6 +855,14 @@ fn resolve_orchestration_state_path(state: Option<PathBuf>, workflow: Option<&st
         }
         (None, None) => PathBuf::from(".conduit/orchestration.db"),
     }
+}
+
+fn parse_board_column(value: &str) -> Result<BoardColumn> {
+    BoardColumn::parse(value).with_context(|| {
+        format!(
+            "unknown board column: {value}; expected one of ideas, brainstorming, spec_review, ready_for_build, in_dev, in_review, human_review, done"
+        )
+    })
 }
 
 fn check_dep(binary: &str) {

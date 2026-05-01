@@ -4,6 +4,7 @@ use rusqlite::types::{Type, Value};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
@@ -208,6 +209,88 @@ pub struct RunSnapshot {
     pub events: Vec<EventRecord>,
     pub approvals: Vec<ApprovalRecord>,
     pub messages: Vec<MessageRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoardColumn {
+    Ideas,
+    Brainstorming,
+    SpecReview,
+    ReadyForBuild,
+    InDev,
+    InReview,
+    HumanReview,
+    Done,
+}
+
+impl BoardColumn {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ideas => "ideas",
+            Self::Brainstorming => "brainstorming",
+            Self::SpecReview => "spec_review",
+            Self::ReadyForBuild => "ready_for_build",
+            Self::InDev => "in_dev",
+            Self::InReview => "in_review",
+            Self::HumanReview => "human_review",
+            Self::Done => "done",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' '], "_")
+            .as_str()
+        {
+            "ideas" | "idea" => Some(Self::Ideas),
+            "brainstorming" | "brainstorm" => Some(Self::Brainstorming),
+            "spec_review" | "spec" | "review_spec" => Some(Self::SpecReview),
+            "ready_for_build" | "ready" => Some(Self::ReadyForBuild),
+            "in_dev" | "dev" | "development" => Some(Self::InDev),
+            "in_review" | "review" => Some(Self::InReview),
+            "human_review" | "human" => Some(Self::HumanReview),
+            "done" | "closed" => Some(Self::Done),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewBoardCard {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub labels: Vec<String>,
+    pub column: BoardColumn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewBoardAssignment {
+    pub agent: String,
+    pub role: String,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoardAssignmentRecord {
+    pub id: i64,
+    pub task_id: String,
+    pub agent: String,
+    pub role: String,
+    pub model: Option<String>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoardCardRecord {
+    pub task: TaskRecord,
+    pub column: BoardColumn,
+    pub assignments: Vec<BoardAssignmentRecord>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -560,6 +643,129 @@ impl SqliteOrchestrationStore {
         let connection = self.connection.lock().await;
         select_approvals(&connection, status)
     }
+
+    pub async fn create_board_card(
+        &self,
+        card: NewBoardCard,
+    ) -> Result<BoardCardRecord, StateError> {
+        let mut connection = self.connection.lock().await;
+        let transaction = connection.transaction().map_err(to_backend)?;
+        let now = unix_time_millis();
+        let id = card.id;
+        let labels = card
+            .labels
+            .iter()
+            .map(|label| redact(label))
+            .collect::<Vec<_>>();
+        let labels_json = serde_json::to_string(&labels).map_err(to_backend)?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO orchestration_tasks (
+                    id, source, title, body, labels_json, status, created_at_ms, updated_at_ms
+                )
+                VALUES (?1, 'board', ?2, ?3, ?4, ?5, ?6, ?6)
+                ON CONFLICT(id) DO UPDATE SET
+                    source = excluded.source,
+                    title = excluded.title,
+                    body = excluded.body,
+                    labels_json = excluded.labels_json,
+                    updated_at_ms = excluded.updated_at_ms
+                "#,
+                params![
+                    &id,
+                    redact(&card.title),
+                    redact(&card.body),
+                    labels_json,
+                    TaskStatus::Pending.as_str(),
+                    now
+                ],
+            )
+            .map_err(to_backend)?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO orchestration_board_cards (
+                    task_id, column, created_at_ms, updated_at_ms
+                )
+                VALUES (?1, ?2, ?3, ?3)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    column = excluded.column,
+                    updated_at_ms = excluded.updated_at_ms
+                "#,
+                params![&id, card.column.as_str(), now],
+            )
+            .map_err(to_backend)?;
+        transaction.commit().map_err(to_backend)?;
+
+        select_board_card(&connection, &id)?
+            .ok_or_else(|| StateError::Backend("board card missing".into()))
+    }
+
+    pub async fn move_board_card(
+        &self,
+        task_id: &str,
+        column: BoardColumn,
+    ) -> Result<BoardCardRecord, StateError> {
+        let connection = self.connection.lock().await;
+        ensure_board_card_exists(&connection, task_id)?;
+        let now = unix_time_millis();
+        connection
+            .execute(
+                r#"
+                UPDATE orchestration_board_cards
+                SET column = ?1, updated_at_ms = ?2
+                WHERE task_id = ?3
+                "#,
+                params![column.as_str(), now, task_id],
+            )
+            .map_err(to_backend)?;
+
+        select_board_card(&connection, task_id)?
+            .ok_or_else(|| StateError::Backend("board card missing".into()))
+    }
+
+    pub async fn assign_board_card(
+        &self,
+        task_id: &str,
+        assignment: NewBoardAssignment,
+    ) -> Result<BoardCardRecord, StateError> {
+        let connection = self.connection.lock().await;
+        ensure_board_card_exists(&connection, task_id)?;
+        let now = unix_time_millis();
+        connection
+            .execute(
+                r#"
+                INSERT INTO orchestration_board_assignments (
+                    task_id, agent, role, model, created_at_ms
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(task_id, agent, role) DO UPDATE SET
+                    model = excluded.model
+                "#,
+                params![
+                    task_id,
+                    redact(&assignment.agent),
+                    redact(&assignment.role),
+                    assignment.model.as_deref().map(redact),
+                    now
+                ],
+            )
+            .map_err(to_backend)?;
+
+        select_board_card(&connection, task_id)?
+            .ok_or_else(|| StateError::Backend("board card missing".into()))
+    }
+
+    pub async fn board_cards(&self) -> Result<Vec<BoardCardRecord>, StateError> {
+        let connection = self.connection.lock().await;
+        select_board_cards(&connection)
+    }
+
+    pub async fn board_card(&self, task_id: &str) -> Result<Option<BoardCardRecord>, StateError> {
+        let connection = self.connection.lock().await;
+        select_board_card(&connection, task_id)
+    }
 }
 
 fn initialize_schema(connection: &Connection) -> Result<(), StateError> {
@@ -632,6 +838,31 @@ fn initialize_schema(connection: &Connection) -> Result<(), StateError> {
             );
             CREATE INDEX IF NOT EXISTS idx_orchestration_messages_task
                 ON orchestration_messages(task_id, created_at_ms);
+            CREATE TABLE IF NOT EXISTS orchestration_board_cards (
+                task_id TEXT PRIMARY KEY,
+                column TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                FOREIGN KEY (task_id)
+                    REFERENCES orchestration_tasks(id)
+                    ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_orchestration_board_cards_column
+                ON orchestration_board_cards(column, updated_at_ms);
+            CREATE TABLE IF NOT EXISTS orchestration_board_assignments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                role TEXT NOT NULL,
+                model TEXT,
+                created_at_ms INTEGER NOT NULL,
+                UNIQUE(task_id, agent, role),
+                FOREIGN KEY (task_id)
+                    REFERENCES orchestration_board_cards(task_id)
+                    ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_orchestration_board_assignments_task
+                ON orchestration_board_assignments(task_id, role, agent);
             "#,
         )
         .map_err(to_backend)
@@ -872,6 +1103,147 @@ fn select_messages_for_run(
     Ok(rows)
 }
 
+fn select_board_cards(connection: &Connection) -> Result<Vec<BoardCardRecord>, StateError> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                t.id, t.source, t.title, t.body, t.labels_json, t.status,
+                t.created_at_ms, t.updated_at_ms,
+                b.column, b.created_at_ms, b.updated_at_ms
+            FROM orchestration_board_cards b
+            JOIN orchestration_tasks t ON t.id = b.task_id
+            ORDER BY b.updated_at_ms DESC, t.id
+            "#,
+        )
+        .map_err(to_backend)?;
+    let mut cards = statement
+        .query_map([], board_card_base_row)
+        .map_err(to_backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(to_backend)?;
+    let task_ids = cards
+        .iter()
+        .map(|card| card.task.id.as_str())
+        .collect::<Vec<_>>();
+    let mut assignments = select_board_assignments_for_tasks(connection, &task_ids)?;
+    for card in &mut cards {
+        card.assignments = assignments.remove(&card.task.id).unwrap_or_default();
+    }
+    Ok(cards)
+}
+
+fn select_board_card(
+    connection: &Connection,
+    task_id: &str,
+) -> Result<Option<BoardCardRecord>, StateError> {
+    let board = connection
+        .query_row(
+            r#"
+            SELECT
+                t.id, t.source, t.title, t.body, t.labels_json, t.status,
+                t.created_at_ms, t.updated_at_ms,
+                b.column, b.created_at_ms, b.updated_at_ms
+            FROM orchestration_board_cards b
+            JOIN orchestration_tasks t ON t.id = b.task_id
+            WHERE b.task_id = ?1
+            "#,
+            params![task_id],
+            board_card_base_row,
+        )
+        .optional()
+        .map_err(to_backend)?;
+
+    let Some(mut card) = board else {
+        return Ok(None);
+    };
+    card.assignments = select_board_assignments(connection, task_id)?;
+    Ok(Some(card))
+}
+
+fn select_board_assignments(
+    connection: &Connection,
+    task_id: &str,
+) -> Result<Vec<BoardAssignmentRecord>, StateError> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT id, task_id, agent, role, model, created_at_ms
+            FROM orchestration_board_assignments
+            WHERE task_id = ?1
+            ORDER BY role, agent, id
+            "#,
+        )
+        .map_err(to_backend)?;
+    let rows = statement
+        .query_map(params![task_id], board_assignment_row)
+        .map_err(to_backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(to_backend)?;
+    Ok(rows)
+}
+
+fn select_board_assignments_for_tasks(
+    connection: &Connection,
+    task_ids: &[&str],
+) -> Result<HashMap<String, Vec<BoardAssignmentRecord>>, StateError> {
+    if task_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let sql = format!(
+        r#"
+        SELECT id, task_id, agent, role, model, created_at_ms
+        FROM orchestration_board_assignments
+        WHERE task_id IN ({})
+        ORDER BY task_id, role, agent, id
+        "#,
+        placeholders(task_ids.len())
+    );
+    let values = task_ids
+        .iter()
+        .map(|task_id| Value::Text((*task_id).to_string()))
+        .collect::<Vec<_>>();
+    let mut statement = connection.prepare(&sql).map_err(to_backend)?;
+    let rows = statement
+        .query_map(params_from_iter(values), board_assignment_row)
+        .map_err(to_backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(to_backend)?;
+
+    let mut assignments: HashMap<String, Vec<BoardAssignmentRecord>> = HashMap::new();
+    for row in rows {
+        assignments
+            .entry(row.task_id.clone())
+            .or_default()
+            .push(row);
+    }
+    Ok(assignments)
+}
+
+fn board_card_base_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BoardCardRecord> {
+    let labels_json: String = row.get(4)?;
+    let labels = decode_json_column(&labels_json, 4)?;
+    let status: String = row.get(5)?;
+    let column: String = row.get(8)?;
+    Ok(BoardCardRecord {
+        task: TaskRecord {
+            id: row.get(0)?,
+            source: row.get(1)?,
+            title: row.get(2)?,
+            body: row.get(3)?,
+            labels,
+            status: TaskStatus::parse(&status),
+            created_at_ms: row.get(6)?,
+            updated_at_ms: row.get(7)?,
+        },
+        column: board_column_from_sql(&column, 8)?,
+        assignments: Vec::new(),
+        created_at_ms: row.get(9)?,
+        updated_at_ms: row.get(10)?,
+    })
+}
+
 fn task_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord> {
     let labels_json: String = row.get(4)?;
     let labels = decode_json_column(&labels_json, 4)?;
@@ -941,6 +1313,17 @@ fn message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRecord> {
     })
 }
 
+fn board_assignment_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BoardAssignmentRecord> {
+    Ok(BoardAssignmentRecord {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        agent: row.get(2)?,
+        role: row.get(3)?,
+        model: row.get(4)?,
+        created_at_ms: row.get(5)?,
+    })
+}
+
 fn ensure_task_exists(connection: &Connection, task_id: &str) -> Result<(), StateError> {
     let exists: Option<i64> = connection
         .query_row(
@@ -953,6 +1336,21 @@ fn ensure_task_exists(connection: &Connection, task_id: &str) -> Result<(), Stat
     exists
         .map(|_| ())
         .ok_or_else(|| StateError::TaskNotFound(task_id.to_string()))
+}
+
+fn ensure_board_card_exists(connection: &Connection, task_id: &str) -> Result<(), StateError> {
+    ensure_task_exists(connection, task_id)?;
+    let exists: Option<i64> = connection
+        .query_row(
+            "SELECT 1 FROM orchestration_board_cards WHERE task_id = ?1",
+            params![task_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(to_backend)?;
+    exists
+        .map(|_| ())
+        .ok_or_else(|| StateError::Backend(format!("board card not found: {task_id}")))
 }
 
 fn ensure_run_exists(connection: &Connection, run_id: &str) -> Result<(), StateError> {
@@ -1015,6 +1413,19 @@ where
 {
     serde_json::from_str(raw).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
+    })
+}
+
+fn board_column_from_sql(raw: &str, column: usize) -> rusqlite::Result<BoardColumn> {
+    BoardColumn::parse(raw).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unknown board column: {raw}"),
+            )),
+        )
     })
 }
 

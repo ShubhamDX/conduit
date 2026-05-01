@@ -1,7 +1,7 @@
 use conduit_core::event::{AgentEvent, Risk};
 use conduit_orchestrator::state::{
-    ApprovalDecision, MessageDirection, NewMessage, NewTask, RunStatus, SqliteOrchestrationStore,
-    TaskStatus,
+    ApprovalDecision, BoardColumn, MessageDirection, NewBoardAssignment, NewBoardCard, NewMessage,
+    NewTask, RunStatus, SqliteOrchestrationStore, TaskStatus,
 };
 
 #[tokio::test]
@@ -203,6 +203,82 @@ async fn sqlite_state_lists_tasks_runs_and_approvals_for_control_plane() {
         .unwrap();
     assert!(store.approvals(Some("pending")).await.unwrap().is_empty());
     assert_eq!(store.approvals(Some("approved")).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn sqlite_state_tracks_board_cards_and_agent_assignments() {
+    let path = unique_db_path("board");
+    let store = SqliteOrchestrationStore::open(&path).unwrap();
+    let card = store
+        .create_board_card(NewBoardCard {
+            id: "product-launch".into(),
+            title: "Launch strategy".into(),
+            body: "Brainstorm product launch with sk-proj-abc123XYZ456def789GHJ012".into(),
+            labels: vec!["product:new".into(), "council".into()],
+            column: BoardColumn::Ideas,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(card.task.id, "product-launch");
+    assert_eq!(card.column, BoardColumn::Ideas);
+    assert!(card.assignments.is_empty());
+    assert!(!card.task.body.contains("abc123"));
+    assert!(card.task.body.contains("sk-proj-[REDACTED]"));
+
+    let assigned = store
+        .assign_board_card(
+            "product-launch",
+            NewBoardAssignment {
+                agent: "codex".into(),
+                role: "coder".into(),
+                model: Some("gpt-5.5".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(assigned.assignments.len(), 1);
+    assert_eq!(assigned.assignments[0].agent, "codex");
+    assert_eq!(assigned.assignments[0].role, "coder");
+    assert_eq!(assigned.assignments[0].model.as_deref(), Some("gpt-5.5"));
+
+    store
+        .assign_board_card(
+            "product-launch",
+            NewBoardAssignment {
+                agent: "claude-code".into(),
+                role: "brainstormer".into(),
+                model: Some("opus-4.7".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let moved = store
+        .move_board_card("product-launch", BoardColumn::Brainstorming)
+        .await
+        .unwrap();
+    assert_eq!(moved.column, BoardColumn::Brainstorming);
+    assert_eq!(moved.assignments.len(), 2);
+    drop(store);
+
+    let reopened = SqliteOrchestrationStore::open(&path).unwrap();
+    let cards = reopened.board_cards().await.unwrap();
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].task.id, "product-launch");
+    assert_eq!(cards[0].column, BoardColumn::Brainstorming);
+    assert_eq!(cards[0].assignments.len(), 2);
+
+    let card = reopened
+        .board_card("product-launch")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(card
+        .assignments
+        .iter()
+        .any(|assignment| assignment.agent == "claude-code" && assignment.role == "brainstormer"));
+
+    let _ = std::fs::remove_file(path);
 }
 
 fn unique_db_path(label: &str) -> std::path::PathBuf {

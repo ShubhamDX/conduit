@@ -9,6 +9,7 @@ This fork adds:
 3. **Uniform sandbox** — §4 security moves up from adapter-internal to orchestrator-enforced. All agents run inside the same OS sandbox profile regardless of backend.
 4. **Claude Code adapter** — new adapter backed by a Python bridge using `claude_agent_sdk`.
 5. **Shared memory** — orchestrator-owned memory store exposes a scoped capability reference to agents and writes back redacted run summaries. Adapters do not receive raw persistence access.
+6. **Control-plane board** — the orchestration ledger can store Kanban cards and agent assignments for Hermes/dashboard surfaces without letting those surfaces spawn agents directly.
 
 Upstream compatibility: a workflow file with only a `codex:` block still works (maps to `agents: [{ name: codex, kind: codex }]`).
 
@@ -33,6 +34,12 @@ Conduit owns a SQLite orchestration ledger for control-plane integrations such a
 The CLI exposes that ledger through `task list`, `task show`, `run show`, `approval list`, `approval approve`, and `approval deny`. Each command supports `--json` for Hermes and dashboard consumers. Approval resolution remains guarded by the store, so already-resolved approvals cannot be silently flipped by another control surface.
 
 The ledger is also the trace substrate for offline harness optimization. `conduit trace export` emits OpenTelemetry-shaped JSONL for HALO-style analysis: one trace per run, with AGENT, LLM, TOOL, GUARDRAIL, and CHAIN spans derived from canonical Conduit records. Export is read-only and redacts strings again at the boundary, including task metadata, labels, tool input/output, approvals, and messages. Optimizer findings are advisory; runtime orchestration, approvals, sandboxing, and code changes remain under Conduit/Hermes control.
+
+## Kanban board and agent council
+
+The control-plane board is persisted in the same SQLite ledger. A board card is a task plus board metadata: column, labels, and agent assignments with roles such as `brainstormer`, `coder`, or `reviewer`. The current columns are `ideas`, `brainstorming`, `spec_review`, `ready_for_build`, `in_dev`, `in_review`, `human_review`, and `done`.
+
+The board is a coordination surface, not an execution bypass. Hermes or a dashboard can create cards, move cards, and assign agents through the board API/CLI. Actual agent runs still flow through the orchestrator, adapter registry, sandbox, memory tools, approvals, and redaction boundary. Future agent-council orchestration should attach council turns and final decisions to board cards as ledger events/messages and memory references, not as peer-to-peer raw agent chats.
 
 ## Required CI gates
 

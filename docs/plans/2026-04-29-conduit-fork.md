@@ -3432,6 +3432,52 @@ Each of the above warrants its own TDD plan under `docs/superpowers/plans/`.
 
 ---
 
+## Phase 10: Kanban Board And Agent Council
+
+**Goal:** Add a first-party Conduit board for product planning, agent assignment, and human review. The board replaces third-party desktop trust with a small control-plane contract over the existing SQLite ledger.
+
+**Architecture:** Board cards are persisted as task records plus board metadata. Cards move across `ideas`, `brainstorming`, `spec_review`, `ready_for_build`, `in_dev`, `in_review`, `human_review`, and `done`. Assignments attach agents to roles (`brainstormer`, `coder`, `reviewer`) with optional model labels. The board never starts agent binaries directly; it only records desired coordination state. Agent execution still flows through the orchestrator, adapter registry, sandbox, memory tools, approvals, and redaction.
+
+### Task 10.1: Board ledger and CLI
+
+**Files:**
+- Modify: `crates/conduit-orchestrator/src/state.rs`
+- Modify: `crates/conduit-orchestrator/tests/state_sqlite.rs`
+- Modify: `crates/conduit-cli/src/main.rs`
+- Modify: `crates/conduit-cli/tests/cli_validate.rs`
+- Modify: `docs/control-plane.md`
+
+- [ ] **Step 1: Write failing tests**
+
+Seed a board card, move it to `brainstorming`, assign `codex` as coder and `claude-code` as brainstormer, and assert JSON output redacts secret-shaped strings.
+
+- [ ] **Step 2: Implement storage**
+
+Add `orchestration_board_cards` and `orchestration_board_assignments` tables plus typed store methods for create, list, show, move, and assign.
+
+- [ ] **Step 3: Implement CLI**
+
+Add:
+
+```bash
+conduit-cli board create --id <id> --title <title> --body <body> [--label <label>] [--column ideas] [--json]
+conduit-cli board list [--json]
+conduit-cli board show <id> [--json]
+conduit-cli board move <id> --column brainstorming [--json]
+conduit-cli board assign <id> --agent codex --role coder [--model gpt-5.5] [--json]
+```
+
+### Task 10.2: Agent council orchestration
+
+**Files:** TBD
+
+- [ ] Add `conduit council start --card <id>` to run moderated multi-agent brainstorming rounds.
+- [ ] Persist each turn as redacted ledger messages/events linked to the board card.
+- [ ] Write final council decisions into shared memory by reference.
+- [ ] Require human approval before moving a card from `spec_review` to `ready_for_build`.
+
+---
+
 ## Self-Review
 
 **1. Spec coverage.** Requirements from the user's prompt:

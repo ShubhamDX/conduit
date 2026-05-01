@@ -36,3 +36,34 @@ Approval resolution is idempotency-guarded by the store: only pending approvals 
 Pass `--json` for machine-readable output. Without `--json`, commands emit compact tab-separated summaries for local inspection.
 
 The control-plane commands do not expose the raw memory database or agent adapter sessions. They operate only on Conduit's normalized, redacted orchestration ledger.
+
+## Board
+
+```bash
+conduit-cli board create \
+  --workflow examples/workflow.yaml \
+  --id product-launch \
+  --title "Product launch" \
+  --body "Brainstorm positioning, feature scope, and build plan" \
+  --label product:new \
+  --json
+
+conduit-cli board assign product-launch \
+  --workflow examples/workflow.yaml \
+  --agent codex \
+  --role coder \
+  --model gpt-5.5 \
+  --json
+
+conduit-cli board move product-launch \
+  --workflow examples/workflow.yaml \
+  --column brainstorming \
+  --json
+
+conduit-cli board list --workflow examples/workflow.yaml --json
+conduit-cli board show product-launch --workflow examples/workflow.yaml --json
+```
+
+Board columns are `ideas`, `brainstorming`, `spec_review`, `ready_for_build`, `in_dev`, `in_review`, `human_review`, and `done`.
+
+The board is a coordination surface only. It stores card metadata and assignments, but it does not spawn agents directly or bypass sandbox, egress, approval, memory, or redaction policy.
