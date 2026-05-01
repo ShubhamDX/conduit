@@ -224,6 +224,7 @@ dependencies = [
  "conduit-orchestrator",
  "conduit-security",
  "conduit-tracker",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

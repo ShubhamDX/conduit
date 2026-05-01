@@ -28,6 +28,7 @@ cd bridge-python && python -m pip install -e . && cd ..
 ./target/release/conduit-cli doctor              # checks deps and Linux userns support
 ./target/release/conduit-cli validate --workflow examples/workflow.yaml
 ./target/release/conduit-cli run --workflow examples/workflow.yaml --issue I-123
+./target/release/conduit-cli task list --workflow examples/workflow.yaml --json
 ./target/release/conduit-cli trace export --workflow examples/workflow.yaml --out traces.jsonl
 ```
 
@@ -48,6 +49,21 @@ halo traces.jsonl -p "Diagnose systemic Conduit agent failures and suggest harne
 ```
 
 See [docs/halo.md](./docs/halo.md) for the export contract and safety boundaries.
+
+## Control plane
+
+Hermes, dashboards, and chat surfaces can inspect Conduit's normalized ledger through read-focused CLI commands:
+
+```bash
+conduit-cli task list --workflow examples/workflow.yaml --json
+conduit-cli task show I-123 --workflow examples/workflow.yaml --json
+conduit-cli run show run-... --workflow examples/workflow.yaml --json
+conduit-cli approval list --workflow examples/workflow.yaml --status pending --json
+conduit-cli approval approve approval-... --workflow examples/workflow.yaml --json
+conduit-cli approval deny approval-... --workflow examples/workflow.yaml --json
+```
+
+See [docs/control-plane.md](./docs/control-plane.md) for the current contract.
 
 ## Security model
 

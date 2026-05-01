@@ -201,6 +201,15 @@ pub struct TaskSnapshot {
     pub messages: Vec<MessageRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunSnapshot {
+    pub task: TaskRecord,
+    pub run: RunRecord,
+    pub events: Vec<EventRecord>,
+    pub approvals: Vec<ApprovalRecord>,
+    pub messages: Vec<MessageRecord>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SqliteOrchestrationStore {
     connection: Arc<Mutex<Connection>>,
@@ -499,6 +508,11 @@ impl SqliteOrchestrationStore {
         }))
     }
 
+    pub async fn tasks(&self) -> Result<Vec<TaskRecord>, StateError> {
+        let connection = self.connection.lock().await;
+        select_tasks(&connection)
+    }
+
     pub async fn task_snapshots(&self) -> Result<Vec<TaskSnapshot>, StateError> {
         let connection = self.connection.lock().await;
         let tasks = select_tasks(&connection)?;
@@ -520,6 +534,31 @@ impl SqliteOrchestrationStore {
         }
 
         Ok(snapshots)
+    }
+
+    pub async fn run_snapshot(&self, run_id: &str) -> Result<Option<RunSnapshot>, StateError> {
+        let connection = self.connection.lock().await;
+        let Some(run) = select_run(&connection, run_id)? else {
+            return Ok(None);
+        };
+        let task = select_task(&connection, &run.task_id)?
+            .ok_or_else(|| StateError::TaskNotFound(run.task_id.clone()))?;
+        let events = select_events_for_runs(&connection, &[run_id])?;
+        let approvals = select_approvals_for_runs(&connection, &[run_id])?;
+        let messages = select_messages_for_run(&connection, run_id)?;
+
+        Ok(Some(RunSnapshot {
+            task,
+            run,
+            events,
+            approvals,
+            messages,
+        }))
+    }
+
+    pub async fn approvals(&self, status: Option<&str>) -> Result<Vec<ApprovalRecord>, StateError> {
+        let connection = self.connection.lock().await;
+        select_approvals(&connection, status)
     }
 }
 
@@ -746,6 +785,49 @@ fn select_approval(
         .map_err(to_backend)
 }
 
+fn select_approvals(
+    connection: &Connection,
+    status: Option<&str>,
+) -> Result<Vec<ApprovalRecord>, StateError> {
+    match status {
+        Some(status) => {
+            let mut statement = connection
+                .prepare(
+                    r#"
+                    SELECT id, run_id, status, reason, risk_json, created_at_ms, resolved_at_ms
+                    FROM orchestration_approvals
+                    WHERE status = ?1
+                    ORDER BY created_at_ms, id
+                    "#,
+                )
+                .map_err(to_backend)?;
+            let rows = statement
+                .query_map(params![status], approval_row)
+                .map_err(to_backend)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(to_backend)?;
+            Ok(rows)
+        }
+        None => {
+            let mut statement = connection
+                .prepare(
+                    r#"
+                    SELECT id, run_id, status, reason, risk_json, created_at_ms, resolved_at_ms
+                    FROM orchestration_approvals
+                    ORDER BY created_at_ms, id
+                    "#,
+                )
+                .map_err(to_backend)?;
+            let rows = statement
+                .query_map([], approval_row)
+                .map_err(to_backend)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(to_backend)?;
+            Ok(rows)
+        }
+    }
+}
+
 fn select_messages_for_task(
     connection: &Connection,
     task_id: &str,
@@ -762,6 +844,28 @@ fn select_messages_for_task(
         .map_err(to_backend)?;
     let rows = statement
         .query_map(params![task_id], message_row)
+        .map_err(to_backend)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(to_backend)?;
+    Ok(rows)
+}
+
+fn select_messages_for_run(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<Vec<MessageRecord>, StateError> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT id, task_id, run_id, channel, sender, direction, body, created_at_ms
+            FROM orchestration_messages
+            WHERE run_id = ?1
+            ORDER BY created_at_ms, id
+            "#,
+        )
+        .map_err(to_backend)?;
+    let rows = statement
+        .query_map(params![run_id], message_row)
         .map_err(to_backend)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(to_backend)?;
