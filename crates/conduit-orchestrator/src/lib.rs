@@ -18,6 +18,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 pub mod config;
+pub mod council;
 pub mod state;
 pub mod trace_export;
 
@@ -42,6 +43,8 @@ pub enum OrchError {
     Memory(#[from] MemoryError),
     #[error("state: {0}")]
     State(#[from] StateError),
+    #[error("config: {0}")]
+    Config(String),
     #[error("issue not found: {0}")]
     NotFound(String),
 }

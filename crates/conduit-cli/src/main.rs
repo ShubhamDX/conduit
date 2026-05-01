@@ -8,6 +8,7 @@ use conduit_core::error::AdapterError;
 use conduit_memory::sqlite::SqliteMemoryStore;
 use conduit_memory::MemoryStore;
 use conduit_orchestrator::config::{load_workflow, AgentSpec, Workflow};
+use conduit_orchestrator::council::{run_agent_council, CouncilOptions, CouncilReport};
 use conduit_orchestrator::state::{
     ApprovalDecision, ApprovalRecord, BoardCardRecord, BoardColumn, NewBoardAssignment,
     NewBoardCard, RunSnapshot, SqliteOrchestrationStore, TaskRecord, TaskSnapshot,
@@ -57,6 +58,10 @@ enum Command {
     Board {
         #[command(subcommand)]
         command: BoardCommand,
+    },
+    Council {
+        #[command(subcommand)]
+        command: CouncilCommand,
     },
     Trace {
         #[command(subcommand)]
@@ -195,6 +200,22 @@ enum BoardCommand {
         role: String,
         #[arg(long)]
         model: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum CouncilCommand {
+    Start {
+        #[arg(long)]
+        workflow: Option<String>,
+        #[arg(long)]
+        state: Option<PathBuf>,
+        #[arg(long)]
+        card: String,
+        #[arg(long, default_value_t = 1)]
+        max_rounds: usize,
         #[arg(long)]
         json: bool,
     },
@@ -357,6 +378,7 @@ async fn main() -> Result<()> {
         Command::Task { command } => handle_task_command(command).await,
         Command::Approval { command } => handle_approval_command(command).await,
         Command::Board { command } => handle_board_command(command).await,
+        Command::Council { command } => handle_council_command(command).await,
         Command::Trace { command } => match command {
             TraceCommand::Export {
                 state,
@@ -384,6 +406,45 @@ async fn main() -> Result<()> {
             }
         },
         Command::MemoryMcp { socket } => memory_mcp::run(&socket).await,
+    }
+}
+
+async fn handle_council_command(command: CouncilCommand) -> Result<()> {
+    match command {
+        CouncilCommand::Start {
+            workflow,
+            state,
+            card,
+            max_rounds,
+            json,
+        } => {
+            let workflow_path = workflow.context("--workflow required for council start")?;
+            let yaml = std::fs::read_to_string(&workflow_path).context("read workflow")?;
+            let workflow = load_workflow(&yaml).context("parse workflow")?;
+            let registry = build_registry(&workflow);
+            let shared_memory = build_memory_store(&workflow, &workflow_path)?;
+            let store = Arc::new(open_existing_orchestration_store(
+                state,
+                Some(workflow_path.as_str()),
+            )?);
+            let config = OrchestratorConfig {
+                workspace: workflow.workspace.clone(),
+                assignee: workflow.assignee.clone(),
+                default_policy: workflow.security.clone(),
+                shared_memory,
+                orchestration_store: Some(store),
+            };
+            let report =
+                run_agent_council(&registry, &config, &card, CouncilOptions { max_rounds })
+                    .await
+                    .context("run agent council")?;
+            if json {
+                write_json(&report)
+            } else {
+                print_council_report(&report);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -738,6 +799,16 @@ fn print_board_card(card: &BoardCardRecord) {
         redact(&card.task.title),
         card.assignments.len()
     );
+}
+
+fn print_council_report(report: &CouncilReport) {
+    println!(
+        "{}\t{}\tturns:{}",
+        redact(&report.card_id),
+        report.column.as_str(),
+        report.turns.len()
+    );
+    println!("{}", redact(&report.summary));
 }
 
 fn print_task_list(tasks: &[TaskRecord]) {
