@@ -256,6 +256,116 @@ fn control_plane_commands_expose_ledger_json() {
     let _ = std::fs::remove_file(path);
 }
 
+#[test]
+fn board_commands_manage_cards_columns_and_assignments() {
+    let path = unique_db_path("board");
+    let binary = env!("CARGO_BIN_EXE_conduit-cli");
+    let state = path.to_str().unwrap();
+
+    let created = run_json(
+        binary,
+        &[
+            "board",
+            "create",
+            "--state",
+            state,
+            "--id",
+            "product-launch",
+            "--title",
+            "New product launch",
+            "--body",
+            "Brainstorm with sk-proj-abc123XYZ456def789GHJ012",
+            "--label",
+            "product:new",
+            "--label",
+            "council",
+            "--json",
+        ],
+    );
+    assert_eq!(created["task"]["id"], "product-launch");
+    assert_eq!(created["column"], "ideas");
+    assert_eq!(
+        created["task"]["body"],
+        "Brainstorm with sk-proj-[REDACTED]"
+    );
+
+    let assigned = run_json(
+        binary,
+        &[
+            "board",
+            "assign",
+            "product-launch",
+            "--state",
+            state,
+            "--agent",
+            "codex",
+            "--role",
+            "coder",
+            "--model",
+            "gpt-5.5",
+            "--json",
+        ],
+    );
+    assert_eq!(assigned["assignments"][0]["agent"], "codex");
+    assert_eq!(assigned["assignments"][0]["role"], "coder");
+    assert_eq!(assigned["assignments"][0]["model"], "gpt-5.5");
+
+    let assigned = run_json(
+        binary,
+        &[
+            "board",
+            "assign",
+            "product-launch",
+            "--state",
+            state,
+            "--agent",
+            "claude-code",
+            "--role",
+            "brainstormer",
+            "--model",
+            "opus-4.7",
+            "--json",
+        ],
+    );
+    assert_eq!(assigned["assignments"].as_array().unwrap().len(), 2);
+
+    let moved = run_json(
+        binary,
+        &[
+            "board",
+            "move",
+            "product-launch",
+            "--state",
+            state,
+            "--column",
+            "brainstorming",
+            "--json",
+        ],
+    );
+    assert_eq!(moved["column"], "brainstorming");
+
+    let cards = run_json(binary, &["board", "list", "--state", state, "--json"]);
+    assert_eq!(cards[0]["task"]["id"], "product-launch");
+    assert_eq!(cards[0]["assignments"].as_array().unwrap().len(), 2);
+
+    let shown = run_json(
+        binary,
+        &[
+            "board",
+            "show",
+            "product-launch",
+            "--state",
+            state,
+            "--json",
+        ],
+    );
+    assert_eq!(shown["column"], "brainstorming");
+    let serialized = serde_json::to_string(&shown).unwrap();
+    assert!(!serialized.contains("abc123"));
+
+    let _ = std::fs::remove_file(path);
+}
+
 fn run_json(binary: &str, args: &[&str]) -> serde_json::Value {
     let output = Command::new(binary).args(args).output().unwrap();
     assert!(

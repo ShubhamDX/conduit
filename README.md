@@ -8,7 +8,7 @@
 
 Upstream Symphony orchestrates Codex via a hardcoded `codex app-server` JSON-RPC client. Great if Codex is your only agent. Not great if you want to mix agents, compare them on the same issue, or add a new backend without patching the core.
 
-Conduit pulls six levers:
+Conduit pulls seven levers:
 
 1. **`AgentAdapter` trait** — `start_session → event stream → stop_session`. Any backend that can talk JSON-RPC over stdio becomes an adapter.
 2. **Canonical `AgentEvent` enum** — every adapter maps its backend events into the same schema. The orchestrator sees one protocol.
@@ -16,6 +16,7 @@ Conduit pulls six levers:
 4. **Orchestrator-owned shared memory** — agents receive a scoped memory reference and request context on demand via `memory_search`, `memory_get`, and `memory_upsert`; Codex and Claude get these as run-scoped MCP tools, and redacted run summaries are written back for later agents.
 5. **Durable control-plane ledger** — live runs write tasks, runs, redacted events, approvals, and tracker messages to SQLite for dashboards and future Hermes-style orchestration.
 6. **HALO-ready trace export** — the ledger can be exported as OpenTelemetry-shaped JSONL for offline harness optimization with [HALO](https://github.com/context-labs/HALO).
+7. **Kanban control board** — product ideas and implementation work can be tracked as cards with columns and role-based agent assignments.
 
 Linear issue labels (`agent:codex`, `agent:claude-code`) route to the right adapter; workflow defaults cover the rest.
 
@@ -29,6 +30,7 @@ cd bridge-python && python -m pip install -e . && cd ..
 ./target/release/conduit-cli validate --workflow examples/workflow.yaml
 ./target/release/conduit-cli run --workflow examples/workflow.yaml --issue I-123
 ./target/release/conduit-cli task list --workflow examples/workflow.yaml --json
+./target/release/conduit-cli board list --workflow examples/workflow.yaml --json
 ./target/release/conduit-cli trace export --workflow examples/workflow.yaml --out traces.jsonl
 ```
 
@@ -61,6 +63,9 @@ conduit-cli run show run-... --workflow examples/workflow.yaml --json
 conduit-cli approval list --workflow examples/workflow.yaml --status pending --json
 conduit-cli approval approve approval-... --workflow examples/workflow.yaml --json
 conduit-cli approval deny approval-... --workflow examples/workflow.yaml --json
+conduit-cli board create --workflow examples/workflow.yaml --id product-launch --title "Product launch" --body "Brainstorm launch plan" --json
+conduit-cli board assign product-launch --workflow examples/workflow.yaml --agent codex --role coder --model gpt-5.5 --json
+conduit-cli board move product-launch --workflow examples/workflow.yaml --column brainstorming --json
 ```
 
 See [docs/control-plane.md](./docs/control-plane.md) for the current contract.
