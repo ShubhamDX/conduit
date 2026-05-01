@@ -160,6 +160,51 @@ async fn sqlite_state_orders_events_across_multiple_runs() {
     );
 }
 
+#[tokio::test]
+async fn sqlite_state_lists_tasks_runs_and_approvals_for_control_plane() {
+    let store = SqliteOrchestrationStore::open_in_memory().unwrap();
+    let task = store
+        .create_task(NewTask {
+            id: "task-control".into(),
+            source: "jira".into(),
+            title: "Control plane".into(),
+            body: "Expose state".into(),
+            labels: vec!["agent:codex".into()],
+        })
+        .await
+        .unwrap();
+    let run = store.start_run(&task.id, "codex").await.unwrap();
+    store
+        .record_event(&run.id, AgentEvent::TokenDelta { text: "hi".into() })
+        .await
+        .unwrap();
+    let approval = store
+        .request_approval(&run.id, "write files", conduit_core::event::Risk::Medium)
+        .await
+        .unwrap();
+
+    let tasks = store.tasks().await.unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].id, task.id);
+
+    let run_snapshot = store.run_snapshot(&run.id).await.unwrap().unwrap();
+    assert_eq!(run_snapshot.task.id, task.id);
+    assert_eq!(run_snapshot.run.id, run.id);
+    assert_eq!(run_snapshot.events.len(), 1);
+    assert_eq!(run_snapshot.approvals.len(), 1);
+
+    let approvals = store.approvals(Some("pending")).await.unwrap();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].id, approval.id);
+
+    store
+        .resolve_approval(&approval.id, ApprovalDecision::Approved)
+        .await
+        .unwrap();
+    assert!(store.approvals(Some("pending")).await.unwrap().is_empty());
+    assert_eq!(store.approvals(Some("approved")).await.unwrap().len(), 1);
+}
+
 fn unique_db_path(label: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

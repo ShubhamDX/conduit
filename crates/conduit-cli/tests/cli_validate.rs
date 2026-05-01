@@ -1,7 +1,9 @@
 use std::process::Command;
 
-use conduit_core::event::AgentEvent;
-use conduit_orchestrator::state::{NewTask, RunStatus, SqliteOrchestrationStore};
+use conduit_core::event::{AgentEvent, Risk};
+use conduit_orchestrator::state::{
+    MessageDirection, NewMessage, NewTask, RunStatus, SqliteOrchestrationStore,
+};
 
 #[test]
 fn validate_good_workflow_exits_zero() {
@@ -127,6 +129,141 @@ fn trace_export_outputs_halo_jsonl_from_state() {
     assert!(stdout.contains("\"name\":\"conduit.llm.turn\""));
 
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn control_plane_commands_expose_ledger_json() {
+    let path = unique_db_path("control-plane");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (run_id, approval_id, denied_approval_id) = runtime.block_on(async {
+        let store = SqliteOrchestrationStore::open(&path).unwrap();
+        let task = store
+            .create_task(NewTask {
+                id: "task-control".into(),
+                source: "jira".into(),
+                title: "Control plane".into(),
+                body: "Expose dashboard state with sk-proj-abc123XYZ456def789GHJ012".into(),
+                labels: vec!["agent:codex".into(), "project:hermes".into()],
+            })
+            .await
+            .unwrap();
+        let run = store.start_run(&task.id, "codex").await.unwrap();
+        store
+            .record_event(
+                &run.id,
+                AgentEvent::TokenDelta {
+                    text: "working".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let approval = store
+            .request_approval(&run.id, "write generated files", Risk::Medium)
+            .await
+            .unwrap();
+        let denied_approval = store
+            .request_approval(&run.id, "open external browser", Risk::High)
+            .await
+            .unwrap();
+        store
+            .record_message(NewMessage {
+                task_id: Some(task.id.clone()),
+                run_id: Some(run.id.clone()),
+                channel: "telegram".into(),
+                sender: "hermes".into(),
+                direction: MessageDirection::Inbound,
+                body: "status?".into(),
+            })
+            .await
+            .unwrap();
+        (run.id, approval.id, denied_approval.id)
+    });
+
+    let binary = env!("CARGO_BIN_EXE_conduit-cli");
+    let state = path.to_str().unwrap();
+
+    let tasks = run_json(binary, &["task", "list", "--state", state, "--json"]);
+    assert_eq!(tasks[0]["id"], "task-control");
+    assert_eq!(tasks[0]["status"], "running");
+
+    let task = run_json(
+        binary,
+        &["task", "show", "task-control", "--state", state, "--json"],
+    );
+    assert_eq!(task["task"]["title"], "Control plane");
+    assert_eq!(
+        task["task"]["body"],
+        "Expose dashboard state with sk-proj-[REDACTED]"
+    );
+    assert_eq!(task["runs"][0]["id"], run_id);
+    assert_eq!(task["approvals"].as_array().unwrap().len(), 2);
+    assert_eq!(task["messages"][0]["channel"], "telegram");
+
+    let run = run_json(
+        binary,
+        &["run", "show", &run_id, "--state", state, "--json"],
+    );
+    assert_eq!(run["task"]["id"], "task-control");
+    assert_eq!(run["run"]["agent"], "codex");
+    assert_eq!(run["events"][0]["event_type"], "token_delta");
+
+    let approvals = run_json(binary, &["approval", "list", "--state", state, "--json"]);
+    assert_eq!(approvals.as_array().unwrap().len(), 2);
+
+    let pending = run_json(
+        binary,
+        &[
+            "approval", "list", "--state", state, "--status", "pending", "--json",
+        ],
+    );
+    assert_eq!(pending.as_array().unwrap().len(), 2);
+
+    let approved = run_json(
+        binary,
+        &[
+            "approval",
+            "approve",
+            &approval_id,
+            "--state",
+            state,
+            "--json",
+        ],
+    );
+    assert_eq!(approved["status"], "approved");
+    assert!(approved["resolved_at_ms"].is_number());
+
+    let denied = run_json(
+        binary,
+        &[
+            "approval",
+            "deny",
+            &denied_approval_id,
+            "--state",
+            state,
+            "--json",
+        ],
+    );
+    assert_eq!(denied["status"], "denied");
+
+    let pending = run_json(
+        binary,
+        &[
+            "approval", "list", "--state", state, "--status", "pending", "--json",
+        ],
+    );
+    assert_eq!(pending.as_array().unwrap().len(), 0);
+
+    let _ = std::fs::remove_file(path);
+}
+
+fn run_json(binary: &str, args: &[&str]) -> serde_json::Value {
+    let output = Command::new(binary).args(args).output().unwrap();
+    assert!(
+        output.status.success(),
+        "args: {args:?}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
 }
 
 fn unique_db_path(label: &str) -> std::path::PathBuf {
