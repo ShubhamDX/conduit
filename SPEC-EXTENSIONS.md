@@ -10,6 +10,7 @@ This fork adds:
 4. **Claude Code adapter** — new adapter backed by a Python bridge using `claude_agent_sdk`.
 5. **Shared memory** — orchestrator-owned memory store exposes a scoped capability reference to agents and writes back redacted run summaries. Adapters do not receive raw persistence access.
 6. **Control-plane board** — the orchestration ledger can store Kanban cards and agent assignments for Hermes/dashboard surfaces without letting those surfaces spawn agents directly.
+7. **Agent council** — the orchestrator can run assigned agents in moderated rounds over a board card, persist redacted turns, and write consensus back through shared memory.
 
 Upstream compatibility: a workflow file with only a `codex:` block still works (maps to `agents: [{ name: codex, kind: codex }]`).
 
@@ -39,7 +40,7 @@ The ledger is also the trace substrate for offline harness optimization. `condui
 
 The control-plane board is persisted in the same SQLite ledger. A board card is a task plus board metadata: column, labels, and agent assignments with roles such as `brainstormer`, `coder`, or `reviewer`. The current columns are `ideas`, `brainstorming`, `spec_review`, `ready_for_build`, `in_dev`, `in_review`, `human_review`, and `done`.
 
-The board is a coordination surface, not an execution bypass. Hermes or a dashboard can create cards, move cards, and assign agents through the board API/CLI. Actual agent runs still flow through the orchestrator, adapter registry, sandbox, memory tools, approvals, and redaction boundary. Future agent-council orchestration should attach council turns and final decisions to board cards as ledger events/messages and memory references, not as peer-to-peer raw agent chats.
+The board is a coordination surface, not an execution bypass. Hermes or a dashboard can create cards, move cards, and assign agents through the board API/CLI. Actual agent runs still flow through the orchestrator, adapter registry, sandbox, memory tools, approvals, and redaction boundary. Agent-council orchestration attaches each turn and the final consensus to the board card as ledger events/messages and memory references, not as peer-to-peer raw agent chats. `conduit council start` moves a card to `spec_review`; promoting from `spec_review` to `ready_for_build` remains a human approval gate.
 
 ## Required CI gates
 

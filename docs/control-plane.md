@@ -67,3 +67,17 @@ conduit-cli board show product-launch --workflow examples/workflow.yaml --json
 Board columns are `ideas`, `brainstorming`, `spec_review`, `ready_for_build`, `in_dev`, `in_review`, `human_review`, and `done`.
 
 The board is a coordination surface only. It stores card metadata and assignments, but it does not spawn agents directly or bypass sandbox, egress, approval, memory, or redaction policy.
+
+## Council
+
+```bash
+conduit-cli council start \
+  --workflow examples/workflow.yaml \
+  --card product-launch \
+  --max-rounds 1 \
+  --json
+```
+
+`council start` reads a board card's assignments and runs one moderated adapter session per assigned agent for each round. Each turn is persisted as redacted ledger events and `council` messages linked to the card. The final consensus is written to shared memory as `council:<card>:consensus`, then the card moves to `spec_review`.
+
+The council does not move cards to `ready_for_build`; that transition is reserved for a human approval gate.

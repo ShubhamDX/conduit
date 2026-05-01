@@ -3436,7 +3436,7 @@ Each of the above warrants its own TDD plan under `docs/superpowers/plans/`.
 
 **Goal:** Add a first-party Conduit board for product planning, agent assignment, and human review. The board replaces third-party desktop trust with a small control-plane contract over the existing SQLite ledger.
 
-**Architecture:** Board cards are persisted as task records plus board metadata. Cards move across `ideas`, `brainstorming`, `spec_review`, `ready_for_build`, `in_dev`, `in_review`, `human_review`, and `done`. Assignments attach agents to roles (`brainstormer`, `coder`, `reviewer`) with optional model labels. The board never starts agent binaries directly; it only records desired coordination state. Agent execution still flows through the orchestrator, adapter registry, sandbox, memory tools, approvals, and redaction.
+**Architecture:** Board cards are persisted as task records plus board metadata. Cards move across `ideas`, `brainstorming`, `spec_review`, `ready_for_build`, `in_dev`, `in_review`, `human_review`, and `done`. Assignments attach agents to roles (`brainstormer`, `coder`, `reviewer`) with optional model labels. The board never starts agent binaries directly; it only records desired coordination state. Agent council execution still flows through the orchestrator, adapter registry, sandbox, memory tools, approvals, and redaction.
 
 ### Task 10.1: Board ledger and CLI
 
@@ -3469,12 +3469,19 @@ conduit-cli board assign <id> --agent codex --role coder [--model gpt-5.5] [--js
 
 ### Task 10.2: Agent council orchestration
 
-**Files:** TBD
+**Files:**
+- Create: `crates/conduit-orchestrator/src/council.rs`
+- Create: `crates/conduit-orchestrator/tests/e2e_council.rs`
+- Modify: `crates/conduit-orchestrator/src/lib.rs`
+- Modify: `crates/conduit-cli/src/main.rs`
+- Modify: `crates/conduit-cli/tests/cli_validate.rs`
+- Modify: `docs/control-plane.md`
 
 - [ ] Add `conduit council start --card <id>` to run moderated multi-agent brainstorming rounds.
 - [ ] Persist each turn as redacted ledger messages/events linked to the board card.
 - [ ] Write final council decisions into shared memory by reference.
-- [ ] Require human approval before moving a card from `spec_review` to `ready_for_build`.
+- [ ] Move completed council cards to `spec_review`.
+- [ ] Follow-up: require human approval before moving a card from `spec_review` to `ready_for_build`.
 
 ---
 
