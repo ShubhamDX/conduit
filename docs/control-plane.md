@@ -93,3 +93,16 @@ conduit-cli council start \
 `council start` reads a board card's assignments and runs one moderated adapter session per assigned agent for each round. Each turn is persisted as redacted ledger events and `council` messages linked to the card. The final consensus is written to shared memory as `council:<card>:consensus`, then the card moves to `spec_review`.
 
 The council does not move cards to `ready_for_build`; that transition is reserved for `board approve-spec` after human review.
+
+## Build And Review
+
+```bash
+conduit-cli build start \
+  --workflow examples/workflow.yaml \
+  --card product-launch \
+  --json
+```
+
+`build start` requires the card to be in `ready_for_build`. It runs assignments with role `coder`, moves the card through `in_dev`, then runs assignments with role `reviewer` and moves the card to `human_review`. Build and review turns are persisted as redacted ledger events and messages, and the final handoff is written to shared memory as `build:<card>:handoff`.
+
+The build runner does not mark cards `done`; that remains a human release/review decision.

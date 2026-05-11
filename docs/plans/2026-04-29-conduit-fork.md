@@ -3516,6 +3516,25 @@ conduit-cli board assign <id> --agent codex --role coder [--model gpt-5.5] [--js
 - [x] Redact generic task/message ledger metadata at the store boundary.
 - [x] Document bounded socket I/O and ledger metadata redaction as production invariants.
 
+### Task 10.5: Build and review handoff
+
+**Files:**
+- Create: `crates/conduit-orchestrator/src/build.rs`
+- Create: `crates/conduit-orchestrator/tests/e2e_build_review.rs`
+- Modify: `crates/conduit-orchestrator/src/lib.rs`
+- Modify: `crates/conduit-cli/src/main.rs`
+- Modify: `crates/conduit-cli/tests/cli_validate.rs`
+- Modify: `README.md`
+- Modify: `SPEC-EXTENSIONS.md`
+- Modify: `docs/control-plane.md`
+
+- [x] Add `conduit build start --card <id>` for ready-for-build cards.
+- [x] Run `coder` assignments under the orchestrator sandbox/memory/redaction path.
+- [x] Run `reviewer` assignments after successful build turns.
+- [x] Persist build/review turns as redacted ledger events and messages.
+- [x] Write the final handoff to shared memory by reference.
+- [x] Move completed build/review cards to `human_review`.
+
 ---
 
 ## Self-Review
