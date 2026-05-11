@@ -335,6 +335,50 @@ async fn sqlite_state_requires_spec_approval_before_ready_for_build() {
     assert!(snapshot.messages[0].body.contains("sk-proj-[REDACTED]"));
 }
 
+#[tokio::test]
+async fn sqlite_state_requires_human_review_approval_before_done() {
+    let store = SqliteOrchestrationStore::open_in_memory().unwrap();
+    store
+        .create_board_card(NewBoardCard {
+            id: "product-launch".into(),
+            title: "Launch strategy".into(),
+            body: "Human review before done".into(),
+            labels: vec!["product:new".into()],
+            column: BoardColumn::HumanReview,
+        })
+        .await
+        .unwrap();
+
+    let direct_move = store
+        .move_board_card("product-launch", BoardColumn::Done)
+        .await
+        .unwrap_err();
+    assert!(direct_move.to_string().contains("board approve-review"));
+
+    let approved = store
+        .approve_board_review(
+            "product-launch",
+            "shubham",
+            Some("Accepted with sk-proj-abc123XYZ456def789GHJ012"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approved.column, BoardColumn::Done);
+
+    let snapshot = store
+        .task_snapshot("product-launch")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.messages.len(), 1);
+    assert_eq!(snapshot.messages[0].channel, "board");
+    assert_eq!(snapshot.messages[0].sender, "shubham");
+    assert_eq!(snapshot.messages[0].direction, MessageDirection::Inbound);
+    assert!(snapshot.messages[0].body.contains("Review approved"));
+    assert!(!snapshot.messages[0].body.contains("abc123"));
+    assert!(snapshot.messages[0].body.contains("sk-proj-[REDACTED]"));
+}
+
 fn unique_db_path(label: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

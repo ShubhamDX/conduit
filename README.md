@@ -71,6 +71,7 @@ conduit-cli board move product-launch --workflow examples/workflow.yaml --column
 conduit-cli council start --workflow examples/workflow.yaml --card product-launch --json
 conduit-cli board approve-spec product-launch --workflow examples/workflow.yaml --reviewer shubham --note "Approved for implementation" --json
 conduit-cli build start --workflow examples/workflow.yaml --card product-launch --json
+conduit-cli board approve-review product-launch --workflow examples/workflow.yaml --reviewer shubham --note "Accepted for release" --json
 ```
 
 See [docs/control-plane.md](./docs/control-plane.md) for the current contract.

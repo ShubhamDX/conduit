@@ -425,6 +425,69 @@ fn board_commands_manage_cards_columns_and_assignments() {
         .contains("Spec approved"));
     assert!(!serde_json::to_string(&task).unwrap().contains("abc123"));
 
+    let human_review = run_json(
+        binary,
+        &[
+            "board",
+            "move",
+            "product-launch",
+            "--state",
+            state,
+            "--column",
+            "human_review",
+            "--json",
+        ],
+    );
+    assert_eq!(human_review["column"], "human_review");
+
+    let direct_done = Command::new(binary)
+        .args([
+            "board",
+            "move",
+            "product-launch",
+            "--state",
+            state,
+            "--column",
+            "done",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!direct_done.status.success());
+    let stderr = String::from_utf8_lossy(&direct_done.stderr);
+    assert!(stderr.contains("board approve-review"), "stderr: {stderr}");
+
+    let done = run_json(
+        binary,
+        &[
+            "board",
+            "approve-review",
+            "product-launch",
+            "--state",
+            state,
+            "--reviewer",
+            "shubham",
+            "--note",
+            "Accepted with sk-proj-abc123XYZ456def789GHJ012",
+            "--json",
+        ],
+    );
+    assert_eq!(done["column"], "done");
+
+    let task = run_json(
+        binary,
+        &["task", "show", "product-launch", "--state", state, "--json"],
+    );
+    let messages = task["messages"].as_array().unwrap();
+    let final_message = messages.last().unwrap();
+    assert_eq!(final_message["channel"], "board");
+    assert_eq!(final_message["sender"], "shubham");
+    assert!(final_message["body"]
+        .as_str()
+        .unwrap()
+        .contains("Review approved"));
+    assert!(!serde_json::to_string(&task).unwrap().contains("abc123"));
+
     let _ = std::fs::remove_file(path);
 }
 

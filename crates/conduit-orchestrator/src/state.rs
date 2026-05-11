@@ -728,6 +728,11 @@ impl SqliteOrchestrationStore {
                 "ready_for_build requires human spec approval; use board approve-spec {task_id}"
             )));
         }
+        if column == BoardColumn::Done && current.column != BoardColumn::Done {
+            return Err(StateError::Backend(format!(
+                "done requires human review approval; use board approve-review {task_id}"
+            )));
+        }
         let now = unix_time_millis();
         connection
             .execute(
@@ -780,6 +785,66 @@ impl SqliteOrchestrationStore {
                 redact(note)
             ),
             None => format!("Spec approved by {reviewer}; card moved to ready_for_build."),
+        };
+        transaction
+            .execute(
+                r#"
+                INSERT INTO orchestration_messages (
+                    task_id, run_id, channel, sender, direction, body, created_at_ms
+                )
+                VALUES (?1, NULL, 'board', ?2, ?3, ?4, ?5)
+                "#,
+                params![
+                    task_id,
+                    reviewer,
+                    MessageDirection::Inbound.as_str(),
+                    redact(&body),
+                    now
+                ],
+            )
+            .map_err(to_backend)?;
+        transaction.commit().map_err(to_backend)?;
+
+        select_board_card(&connection, task_id)?
+            .ok_or_else(|| StateError::Backend("board card missing".into()))
+    }
+
+    pub async fn approve_board_review(
+        &self,
+        task_id: &str,
+        reviewer: &str,
+        note: Option<&str>,
+    ) -> Result<BoardCardRecord, StateError> {
+        let mut connection = self.connection.lock().await;
+        let transaction = connection.transaction().map_err(to_backend)?;
+        let current = select_board_card(&transaction, task_id)?
+            .ok_or_else(|| StateError::Backend(format!("board card not found: {task_id}")))?;
+        if current.column != BoardColumn::HumanReview {
+            return Err(StateError::Backend(format!(
+                "board card {task_id} must be in human_review before review approval; current column: {}",
+                current.column.as_str()
+            )));
+        }
+
+        let now = unix_time_millis();
+        transaction
+            .execute(
+                r#"
+                UPDATE orchestration_board_cards
+                SET column = ?1, updated_at_ms = ?2
+                WHERE task_id = ?3
+                "#,
+                params![BoardColumn::Done.as_str(), now, task_id],
+            )
+            .map_err(to_backend)?;
+
+        let reviewer = redact(reviewer);
+        let body = match note.map(str::trim).filter(|note| !note.is_empty()) {
+            Some(note) => format!(
+                "Review approved by {reviewer}; card moved to done.\n\n{}",
+                redact(note)
+            ),
+            None => format!("Review approved by {reviewer}; card moved to done."),
         };
         transaction
             .execute(
