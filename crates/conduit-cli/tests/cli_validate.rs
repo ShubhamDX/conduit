@@ -448,6 +448,26 @@ fn council_start_rejects_without_workflow_and_requires_existing_card() {
     let _ = std::fs::remove_file(path);
 }
 
+#[test]
+fn build_start_rejects_without_workflow() {
+    let path = unique_db_path("build-start");
+    let binary = env!("CARGO_BIN_EXE_conduit-cli");
+    let state = path.to_str().unwrap();
+
+    let output = Command::new(binary)
+        .args(["build", "start", "--state", state, "--card", "missing"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--workflow required for build start"),
+        "stderr: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
 fn run_json(binary: &str, args: &[&str]) -> serde_json::Value {
     let output = Command::new(binary).args(args).output().unwrap();
     assert!(

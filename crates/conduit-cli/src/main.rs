@@ -7,6 +7,7 @@ use conduit_core::adapter::{AgentAdapter, SessionHandle, StartRequest};
 use conduit_core::error::AdapterError;
 use conduit_memory::sqlite::SqliteMemoryStore;
 use conduit_memory::MemoryStore;
+use conduit_orchestrator::build::{run_build_review, BuildReviewOptions, BuildReviewReport};
 use conduit_orchestrator::config::{load_workflow, AgentSpec, Workflow};
 use conduit_orchestrator::council::{run_agent_council, CouncilOptions, CouncilReport};
 use conduit_orchestrator::state::{
@@ -62,6 +63,10 @@ enum Command {
     Council {
         #[command(subcommand)]
         command: CouncilCommand,
+    },
+    Build {
+        #[command(subcommand)]
+        command: BuildCommand,
     },
     Trace {
         #[command(subcommand)]
@@ -235,6 +240,20 @@ enum CouncilCommand {
 }
 
 #[derive(Subcommand)]
+enum BuildCommand {
+    Start {
+        #[arg(long)]
+        workflow: Option<String>,
+        #[arg(long)]
+        state: Option<PathBuf>,
+        #[arg(long)]
+        card: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum TraceCommand {
     Export {
         #[arg(long)]
@@ -392,6 +411,7 @@ async fn main() -> Result<()> {
         Command::Approval { command } => handle_approval_command(command).await,
         Command::Board { command } => handle_board_command(command).await,
         Command::Council { command } => handle_council_command(command).await,
+        Command::Build { command } => handle_build_command(command).await,
         Command::Trace { command } => match command {
             TraceCommand::Export {
                 state,
@@ -419,6 +439,43 @@ async fn main() -> Result<()> {
             }
         },
         Command::MemoryMcp { socket } => memory_mcp::run(&socket).await,
+    }
+}
+
+async fn handle_build_command(command: BuildCommand) -> Result<()> {
+    match command {
+        BuildCommand::Start {
+            workflow,
+            state,
+            card,
+            json,
+        } => {
+            let workflow_path = workflow.context("--workflow required for build start")?;
+            let yaml = std::fs::read_to_string(&workflow_path).context("read workflow")?;
+            let workflow = load_workflow(&yaml).context("parse workflow")?;
+            let registry = build_registry(&workflow);
+            let shared_memory = build_memory_store(&workflow, &workflow_path)?;
+            let store = Arc::new(open_existing_orchestration_store(
+                state,
+                Some(workflow_path.as_str()),
+            )?);
+            let config = OrchestratorConfig {
+                workspace: workflow.workspace.clone(),
+                assignee: workflow.assignee.clone(),
+                default_policy: workflow.security.clone(),
+                shared_memory,
+                orchestration_store: Some(store),
+            };
+            let report = run_build_review(&registry, &config, &card, BuildReviewOptions::default())
+                .await
+                .context("run build review")?;
+            if json {
+                write_json(&report)
+            } else {
+                print_build_review_report(&report);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -840,6 +897,17 @@ fn print_council_report(report: &CouncilReport) {
         redact(&report.card_id),
         report.column.as_str(),
         report.turns.len()
+    );
+    println!("{}", redact(&report.summary));
+}
+
+fn print_build_review_report(report: &BuildReviewReport) {
+    println!(
+        "{}\t{}\tbuild:{}\treview:{}",
+        redact(&report.card_id),
+        report.column.as_str(),
+        report.build_turns.len(),
+        report.review_turns.len()
     );
     println!("{}", redact(&report.summary));
 }

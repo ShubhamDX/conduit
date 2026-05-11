@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 
+pub mod build;
 pub mod config;
 pub mod council;
 pub mod state;
