@@ -84,6 +84,28 @@ def test_memory_proxy_forwards_socket_calls_to_parent_rpc():
     assert response["result"]["entry"]["value"] == "memory_get"
 
 
+def test_memory_proxy_rejects_oversized_socket_requests(monkeypatch):
+    from conduit_bridge import __main__ as main_loop
+
+    monkeypatch.setattr(main_loop, "MAX_MEMORY_REQUEST_BYTES", 8)
+
+    async def scenario():
+        async def fake_memory_call(method, params):
+            raise AssertionError("memory call should not run")
+
+        async with MemoryMcpProxy(fake_memory_call) as proxy:
+            reader, writer = await asyncio.open_unix_connection(proxy.socket_path)
+            writer.write(b"a" * 9)
+            await writer.drain()
+            response = json.loads((await reader.readline()).decode("utf-8"))
+            writer.close()
+            await writer.wait_closed()
+            return response
+
+    response = asyncio.run(scenario())
+    assert "exceeds byte limit" in response["error"]
+
+
 def test_parent_rpc_routes_memory_response_to_pending_request():
     async def scenario():
         out_lines = []

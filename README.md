@@ -69,6 +69,7 @@ conduit-cli board create --workflow examples/workflow.yaml --id product-launch -
 conduit-cli board assign product-launch --workflow examples/workflow.yaml --agent codex --role coder --model gpt-5.5 --json
 conduit-cli board move product-launch --workflow examples/workflow.yaml --column brainstorming --json
 conduit-cli council start --workflow examples/workflow.yaml --card product-launch --json
+conduit-cli board approve-spec product-launch --workflow examples/workflow.yaml --reviewer shubham --note "Approved for implementation" --json
 ```
 
 See [docs/control-plane.md](./docs/control-plane.md) for the current contract.
@@ -79,6 +80,7 @@ See [docs/control-plane.md](./docs/control-plane.md) for the current contract.
 - Egress denied unless host matches `security.egress_allowlist`.
 - CPU/memory/fd caps via `setrlimit` before `exec`.
 - Regex redaction on every event before persistence/posting.
+- Bounded local Memory MCP socket I/O prevents unbounded request/response buffering.
 - Approval gate on destructive tool calls (`on_write` default).
 
 See [SPEC-EXTENSIONS.md](./SPEC-EXTENSIONS.md) for the full divergence from upstream.

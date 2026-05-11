@@ -24,13 +24,15 @@ For Claude Code, the Python bridge starts a run-scoped local MCP server named `c
 
 For Codex, the adapter injects a run-scoped `mcp_servers.conduit_memory` config override into the `codex app-server` launch. That MCP server is the hidden `conduit memory-mcp` subcommand, which connects to a short-lived Unix socket owned by the adapter and forwards tool calls to the same orchestrator-scoped `MemoryToolProvider`.
 
+Memory MCP socket traffic is bounded. The adapter proxy caps local tool requests, and the CLI/Python bridge shims cap local memory responses/requests with timeouts so a malformed child process cannot force unbounded line buffering.
+
 ## Platform egress support
 
 macOS allowlisted egress is enforced by Seatbelt denying network access by default and allowing agent networking only to loopback addresses for the local CONNECT proxy. Linux currently fails closed for non-empty `egress_allowlist` policies: `bubblewrap` runs with `--unshare-net`, and Conduit refuses allowlisted network sessions until a namespace-safe proxy design exists. This avoids treating proxy environment variables as an enforcement boundary.
 
 ## Durable orchestration state
 
-Conduit owns a SQLite orchestration ledger for control-plane integrations such as Hermes, dashboards, Jira-style boards, Telegram, and future work sources. The ledger records tasks, runs, redacted agent events, approval requests, and control-surface messages. External companions or dashboards should read and write this normalized state instead of driving agent adapters directly; sandboxed execution still flows through the orchestrator and adapter registry. The single-issue `run_one_issue` path writes to the ledger when an `SqliteOrchestrationStore` is configured; the CLI opens `.conduit/orchestration.db` beside the workflow file by default.
+Conduit owns a SQLite orchestration ledger for control-plane integrations such as Hermes, dashboards, Jira-style boards, Telegram, and future work sources. The ledger records tasks, runs, redacted agent events, approval requests, and control-surface messages. Task metadata, labels, run agent names, message channels, message senders, and message bodies are redacted at the store boundary before persistence. External companions or dashboards should read and write this normalized state instead of driving agent adapters directly; sandboxed execution still flows through the orchestrator and adapter registry. The single-issue `run_one_issue` path writes to the ledger when an `SqliteOrchestrationStore` is configured; the CLI opens `.conduit/orchestration.db` beside the workflow file by default.
 
 The CLI exposes that ledger through `task list`, `task show`, `run show`, `approval list`, `approval approve`, and `approval deny`. Each command supports `--json` for Hermes and dashboard consumers. Approval resolution remains guarded by the store, so already-resolved approvals cannot be silently flipped by another control surface.
 
@@ -40,7 +42,7 @@ The ledger is also the trace substrate for offline harness optimization. `condui
 
 The control-plane board is persisted in the same SQLite ledger. A board card is a task plus board metadata: column, labels, and agent assignments with roles such as `brainstormer`, `coder`, or `reviewer`. The current columns are `ideas`, `brainstorming`, `spec_review`, `ready_for_build`, `in_dev`, `in_review`, `human_review`, and `done`.
 
-The board is a coordination surface, not an execution bypass. Hermes or a dashboard can create cards, move cards, and assign agents through the board API/CLI. Actual agent runs still flow through the orchestrator, adapter registry, sandbox, memory tools, approvals, and redaction boundary. Agent-council orchestration attaches each turn and the final consensus to the board card as ledger events/messages and memory references, not as peer-to-peer raw agent chats. `conduit council start` moves a card to `spec_review`; promoting from `spec_review` to `ready_for_build` remains a human approval gate.
+The board is a coordination surface, not an execution bypass. Hermes or a dashboard can create cards, move cards, and assign agents through the board API/CLI. Actual agent runs still flow through the orchestrator, adapter registry, sandbox, memory tools, approvals, and redaction boundary. Agent-council orchestration attaches each turn and the final consensus to the board card as ledger events/messages and memory references, not as peer-to-peer raw agent chats. `conduit council start` moves a card to `spec_review`; promoting into `ready_for_build` requires `conduit board approve-spec`, which records a redacted human approval message on the card before moving it.
 
 ## Required CI gates
 

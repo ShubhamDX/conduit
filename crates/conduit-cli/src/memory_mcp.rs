@@ -1,8 +1,12 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::path::Path;
-use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::time::{timeout, Duration};
+
+const MAX_MEMORY_RESPONSE_BYTES: usize = 1024 * 1024;
+const MEMORY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 const TOOLS: &[(&str, &str, &str)] = &[
     (
@@ -129,12 +133,33 @@ async fn call_memory(socket: &Path, method: &str, params: Value) -> Result<Value
     stream.write_all(request.as_bytes()).await?;
     stream.flush().await?;
 
-    let mut lines = BufReader::new(stream).lines();
-    let line = lines
-        .next_line()
-        .await?
-        .context("memory socket closed without response")?;
+    let line = read_bounded_line(&mut stream).await?;
     serde_json::from_str(&line).context("parse memory socket response")
+}
+
+async fn read_bounded_line(stream: &mut UnixStream) -> Result<String> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        if buffer.len() >= MAX_MEMORY_RESPONSE_BYTES {
+            anyhow::bail!("memory socket response exceeds byte limit");
+        }
+        let read_len = chunk.len().min(MAX_MEMORY_RESPONSE_BYTES - buffer.len());
+        let bytes_read = timeout(MEMORY_RESPONSE_TIMEOUT, stream.read(&mut chunk[..read_len]))
+            .await
+            .context("memory socket response timed out")??;
+        if bytes_read == 0 {
+            if buffer.is_empty() {
+                anyhow::bail!("memory socket closed without response");
+            }
+            return String::from_utf8(buffer).context("decode memory socket response");
+        }
+        buffer.extend_from_slice(&chunk[..bytes_read]);
+        if let Some(position) = buffer.iter().position(|byte| *byte == b'\n') {
+            buffer.truncate(position);
+            return String::from_utf8(buffer).context("decode memory socket response");
+        }
+    }
 }
 
 fn response(id: Value, result: Value) -> Value {
@@ -152,6 +177,7 @@ fn error(id: Value, code: i64, message: impl Into<String>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::UnixListener;
 
     #[tokio::test]
     async fn tools_list_returns_memory_tools() {
@@ -169,5 +195,36 @@ mod tests {
         assert_eq!(tools[0]["name"], "memory_search");
         assert_eq!(tools[1]["name"], "memory_get");
         assert_eq!(tools[2]["name"], "memory_upsert");
+    }
+
+    #[tokio::test]
+    async fn call_memory_rejects_oversized_socket_response() {
+        let socket = test_socket("cli-memory-mcp-oversized");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = stream
+                .write_all(&vec![b'a'; MAX_MEMORY_RESPONSE_BYTES + 1])
+                .await;
+        });
+
+        let error = call_memory(&socket, "memory_get", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds byte limit"));
+        server.await.unwrap();
+        let _ = std::fs::remove_file(socket);
+    }
+
+    fn test_socket(label: &str) -> std::path::PathBuf {
+        let dir = std::path::PathBuf::from("/tmp").join(format!(
+            "c-{label}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("memory.sock")
     }
 }

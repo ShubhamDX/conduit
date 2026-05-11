@@ -16,6 +16,9 @@ from conduit_bridge.protocol import (
     encode_response,
 )
 
+MAX_MEMORY_REQUEST_BYTES = 1024 * 1024
+MEMORY_REQUEST_TIMEOUT_SECS = 5
+
 
 async def handle_message(
     line: str,
@@ -142,7 +145,7 @@ class MemoryMcpProxy:
         writer: asyncio.StreamWriter,
     ) -> None:
         try:
-            raw = await reader.readline()
+            raw = await _read_bounded_line(reader)
             if not raw:
                 return
             payload = json.loads(raw.decode("utf-8"))
@@ -158,6 +161,25 @@ class MemoryMcpProxy:
         finally:
             writer.close()
             await writer.wait_closed()
+
+
+async def _read_bounded_line(reader: asyncio.StreamReader) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        remaining = MAX_MEMORY_REQUEST_BYTES - total
+        if remaining <= 0:
+            raise RuntimeError("memory socket request exceeds byte limit")
+        chunk = await asyncio.wait_for(
+            reader.read(min(4096, remaining)),
+            timeout=MEMORY_REQUEST_TIMEOUT_SECS,
+        )
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        total += len(chunk)
+        if b"\n" in chunk:
+            return b"".join(chunks).split(b"\n", 1)[0]
 
 
 async def amain() -> None:

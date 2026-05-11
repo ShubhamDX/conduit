@@ -3477,11 +3477,44 @@ conduit-cli board assign <id> --agent codex --role coder [--model gpt-5.5] [--js
 - Modify: `crates/conduit-cli/tests/cli_validate.rs`
 - Modify: `docs/control-plane.md`
 
-- [ ] Add `conduit council start --card <id>` to run moderated multi-agent brainstorming rounds.
-- [ ] Persist each turn as redacted ledger messages/events linked to the board card.
-- [ ] Write final council decisions into shared memory by reference.
-- [ ] Move completed council cards to `spec_review`.
-- [ ] Follow-up: require human approval before moving a card from `spec_review` to `ready_for_build`.
+- [x] Add `conduit council start --card <id>` to run moderated multi-agent brainstorming rounds.
+- [x] Persist each turn as redacted ledger messages/events linked to the board card.
+- [x] Write final council decisions into shared memory by reference.
+- [x] Move completed council cards to `spec_review`.
+
+### Task 10.3: Spec approval gate
+
+**Files:**
+- Modify: `crates/conduit-orchestrator/src/state.rs`
+- Modify: `crates/conduit-orchestrator/tests/state_sqlite.rs`
+- Modify: `crates/conduit-cli/src/main.rs`
+- Modify: `crates/conduit-cli/tests/cli_validate.rs`
+- Modify: `README.md`
+- Modify: `SPEC-EXTENSIONS.md`
+- Modify: `docs/control-plane.md`
+
+- [x] Block direct board moves into `ready_for_build`.
+- [x] Add `conduit board approve-spec <card>` for human-reviewed promotion from `spec_review`.
+- [x] Persist a redacted board message naming the reviewer and note.
+- [x] Document the manual approval path for dashboards and Hermes-style control surfaces.
+
+### Task 10.4: Production hardening pass
+
+**Files:**
+- Modify: `crates/conduit-adapter-codex/src/memory_mcp.rs`
+- Modify: `crates/conduit-cli/src/memory_mcp.rs`
+- Modify: `bridge-python/src/conduit_bridge/__main__.py`
+- Modify: `bridge-python/tests/test_main_loop.py`
+- Modify: `crates/conduit-orchestrator/src/state.rs`
+- Modify: `crates/conduit-orchestrator/tests/state_sqlite.rs`
+- Modify: `README.md`
+- Modify: `SPEC-EXTENSIONS.md`
+- Modify: `docs/control-plane.md`
+
+- [x] Cap local Memory MCP request/response reads and add timeouts.
+- [x] Add regression tests for oversized Memory MCP socket payloads.
+- [x] Redact generic task/message ledger metadata at the store boundary.
+- [x] Document bounded socket I/O and ledger metadata redaction as production invariants.
 
 ---
 

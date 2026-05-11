@@ -363,6 +363,68 @@ fn board_commands_manage_cards_columns_and_assignments() {
     let serialized = serde_json::to_string(&shown).unwrap();
     assert!(!serialized.contains("abc123"));
 
+    let spec_review = run_json(
+        binary,
+        &[
+            "board",
+            "move",
+            "product-launch",
+            "--state",
+            state,
+            "--column",
+            "spec_review",
+            "--json",
+        ],
+    );
+    assert_eq!(spec_review["column"], "spec_review");
+
+    let direct_ready = Command::new(binary)
+        .args([
+            "board",
+            "move",
+            "product-launch",
+            "--state",
+            state,
+            "--column",
+            "ready_for_build",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!direct_ready.status.success());
+    let stderr = String::from_utf8_lossy(&direct_ready.stderr);
+    assert!(stderr.contains("board approve-spec"), "stderr: {stderr}");
+
+    let approved = run_json(
+        binary,
+        &[
+            "board",
+            "approve-spec",
+            "product-launch",
+            "--state",
+            state,
+            "--reviewer",
+            "shubham",
+            "--note",
+            "Good to build with sk-proj-abc123XYZ456def789GHJ012",
+            "--json",
+        ],
+    );
+    assert_eq!(approved["column"], "ready_for_build");
+
+    let task = run_json(
+        binary,
+        &["task", "show", "product-launch", "--state", state, "--json"],
+    );
+    assert_eq!(task["messages"][0]["channel"], "board");
+    assert_eq!(task["messages"][0]["sender"], "shubham");
+    assert_eq!(task["messages"][0]["direction"], "inbound");
+    assert!(task["messages"][0]["body"]
+        .as_str()
+        .unwrap()
+        .contains("Spec approved"));
+    assert!(!serde_json::to_string(&task).unwrap().contains("abc123"));
+
     let _ = std::fs::remove_file(path);
 }
 

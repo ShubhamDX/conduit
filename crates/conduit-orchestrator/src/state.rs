@@ -324,7 +324,12 @@ impl SqliteOrchestrationStore {
     pub async fn create_task(&self, task: NewTask) -> Result<TaskRecord, StateError> {
         let connection = self.connection.lock().await;
         let now = unix_time_millis();
-        let labels_json = serde_json::to_string(&task.labels).map_err(to_backend)?;
+        let labels = task
+            .labels
+            .iter()
+            .map(|label| redact(label))
+            .collect::<Vec<_>>();
+        let labels_json = serde_json::to_string(&labels).map_err(to_backend)?;
         connection
             .execute(
                 r#"
@@ -341,9 +346,9 @@ impl SqliteOrchestrationStore {
                 "#,
                 params![
                     task.id,
-                    task.source,
-                    task.title,
-                    task.body,
+                    redact(&task.source),
+                    redact(&task.title),
+                    redact(&task.body),
                     labels_json,
                     TaskStatus::Pending.as_str(),
                     now
@@ -368,7 +373,13 @@ impl SqliteOrchestrationStore {
                 )
                 VALUES (?1, ?2, ?3, ?4, ?5, NULL)
                 "#,
-                params![run_id, task_id, agent, RunStatus::Running.as_str(), now],
+                params![
+                    run_id,
+                    task_id,
+                    redact(agent),
+                    RunStatus::Running.as_str(),
+                    now
+                ],
             )
             .map_err(to_backend)?;
         transaction
@@ -537,6 +548,8 @@ impl SqliteOrchestrationStore {
     pub async fn record_message(&self, message: NewMessage) -> Result<MessageRecord, StateError> {
         let connection = self.connection.lock().await;
         let now = unix_time_millis();
+        let channel = redact(&message.channel);
+        let sender = redact(&message.sender);
         let body = redact(&message.body);
         connection
             .execute(
@@ -549,8 +562,8 @@ impl SqliteOrchestrationStore {
                 params![
                     message.task_id,
                     message.run_id,
-                    message.channel,
-                    message.sender,
+                    channel,
+                    sender,
                     message.direction.as_str(),
                     body,
                     now
@@ -563,8 +576,8 @@ impl SqliteOrchestrationStore {
             id,
             task_id: message.task_id,
             run_id: message.run_id,
-            channel: message.channel,
-            sender: message.sender,
+            channel,
+            sender,
             direction: message.direction,
             body,
             created_at_ms: now,
@@ -708,7 +721,13 @@ impl SqliteOrchestrationStore {
         column: BoardColumn,
     ) -> Result<BoardCardRecord, StateError> {
         let connection = self.connection.lock().await;
-        ensure_board_card_exists(&connection, task_id)?;
+        let current = select_board_card(&connection, task_id)?
+            .ok_or_else(|| StateError::Backend(format!("board card not found: {task_id}")))?;
+        if column == BoardColumn::ReadyForBuild && current.column != BoardColumn::ReadyForBuild {
+            return Err(StateError::Backend(format!(
+                "ready_for_build requires human spec approval; use board approve-spec {task_id}"
+            )));
+        }
         let now = unix_time_millis();
         connection
             .execute(
@@ -720,6 +739,66 @@ impl SqliteOrchestrationStore {
                 params![column.as_str(), now, task_id],
             )
             .map_err(to_backend)?;
+
+        select_board_card(&connection, task_id)?
+            .ok_or_else(|| StateError::Backend("board card missing".into()))
+    }
+
+    pub async fn approve_board_spec(
+        &self,
+        task_id: &str,
+        reviewer: &str,
+        note: Option<&str>,
+    ) -> Result<BoardCardRecord, StateError> {
+        let mut connection = self.connection.lock().await;
+        let transaction = connection.transaction().map_err(to_backend)?;
+        let current = select_board_card(&transaction, task_id)?
+            .ok_or_else(|| StateError::Backend(format!("board card not found: {task_id}")))?;
+        if current.column != BoardColumn::SpecReview {
+            return Err(StateError::Backend(format!(
+                "board card {task_id} must be in spec_review before spec approval; current column: {}",
+                current.column.as_str()
+            )));
+        }
+
+        let now = unix_time_millis();
+        transaction
+            .execute(
+                r#"
+                UPDATE orchestration_board_cards
+                SET column = ?1, updated_at_ms = ?2
+                WHERE task_id = ?3
+                "#,
+                params![BoardColumn::ReadyForBuild.as_str(), now, task_id],
+            )
+            .map_err(to_backend)?;
+
+        let reviewer = redact(reviewer);
+        let body = match note.map(str::trim).filter(|note| !note.is_empty()) {
+            Some(note) => format!(
+                "Spec approved by {reviewer}; card moved to ready_for_build.\n\n{}",
+                redact(note)
+            ),
+            None => format!("Spec approved by {reviewer}; card moved to ready_for_build."),
+        };
+        transaction
+            .execute(
+                r#"
+                INSERT INTO orchestration_messages (
+                    task_id, run_id, channel, sender, direction, body, created_at_ms
+                )
+                VALUES (?1, NULL, 'board', ?2, ?3, ?4, ?5)
+                "#,
+                params![
+                    task_id,
+                    reviewer,
+                    MessageDirection::Inbound.as_str(),
+                    redact(&body),
+                    now
+                ],
+            )
+            .map_err(to_backend)?;
+        transaction.commit().map_err(to_backend)?;
 
         select_board_card(&connection, task_id)?
             .ok_or_else(|| StateError::Backend("board card missing".into()))

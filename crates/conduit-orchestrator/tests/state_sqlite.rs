@@ -12,9 +12,13 @@ async fn sqlite_state_persists_task_run_and_redacted_events() {
         .create_task(NewTask {
             id: "task-1".into(),
             source: "telegram".into(),
-            title: "Build Hermes".into(),
-            body: "Wire a buddy orchestrator".into(),
-            labels: vec!["agent:codex".into(), "project:hermes".into()],
+            title: "Build Hermes with sk-proj-abc123XYZ456def789GHJ012".into(),
+            body: "Wire a buddy orchestrator using sk-proj-abc123XYZ456def789GHJ012".into(),
+            labels: vec![
+                "agent:codex".into(),
+                "project:hermes".into(),
+                "sk-proj-abc123XYZ456def789GHJ012".into(),
+            ],
         })
         .await
         .unwrap();
@@ -34,7 +38,12 @@ async fn sqlite_state_persists_task_run_and_redacted_events() {
     let snapshot = reopened.task_snapshot("task-1").await.unwrap().unwrap();
 
     assert_eq!(snapshot.task.status, TaskStatus::Running);
-    assert_eq!(snapshot.task.labels, vec!["agent:codex", "project:hermes"]);
+    assert_eq!(
+        snapshot.task.labels,
+        vec!["agent:codex", "project:hermes", "sk-proj-[REDACTED]"]
+    );
+    assert!(!snapshot.task.title.contains("abc123"));
+    assert!(!snapshot.task.body.contains("abc123"));
     assert_eq!(snapshot.runs.len(), 1);
     assert_eq!(snapshot.runs[0].status, RunStatus::Running);
     assert_eq!(snapshot.runs[0].agent, "codex");
@@ -70,8 +79,8 @@ async fn sqlite_state_records_approvals_and_messages_for_control_surfaces() {
         .record_message(NewMessage {
             task_id: Some(task.id.clone()),
             run_id: Some(run.id.clone()),
-            channel: "telegram".into(),
-            sender: "shubham".into(),
+            channel: "telegram-sk-proj-abc123XYZ456def789GHJ012".into(),
+            sender: "shubham-sk-proj-abc123XYZ456def789GHJ012".into(),
             direction: MessageDirection::Inbound,
             body: "please use sk-proj-abc123XYZ456def789GHJ012".into(),
         })
@@ -102,7 +111,8 @@ async fn sqlite_state_records_approvals_and_messages_for_control_surfaces() {
     let snapshot = store.task_snapshot("task-2").await.unwrap().unwrap();
     assert_eq!(snapshot.approvals[0].status, "approved");
     assert_eq!(snapshot.messages.len(), 1);
-    assert_eq!(snapshot.messages[0].channel, "telegram");
+    assert_eq!(snapshot.messages[0].channel, "telegram-sk-proj-[REDACTED]");
+    assert_eq!(snapshot.messages[0].sender, "shubham-sk-proj-[REDACTED]");
     assert_eq!(snapshot.messages[0].direction, MessageDirection::Inbound);
     assert!(!snapshot.messages[0].body.contains("abc123"));
     assert!(snapshot.messages[0].body.contains("sk-proj-[REDACTED]"));
@@ -279,6 +289,50 @@ async fn sqlite_state_tracks_board_cards_and_agent_assignments() {
         .any(|assignment| assignment.agent == "claude-code" && assignment.role == "brainstormer"));
 
     let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn sqlite_state_requires_spec_approval_before_ready_for_build() {
+    let store = SqliteOrchestrationStore::open_in_memory().unwrap();
+    store
+        .create_board_card(NewBoardCard {
+            id: "product-launch".into(),
+            title: "Launch strategy".into(),
+            body: "Review the council output".into(),
+            labels: vec!["product:new".into()],
+            column: BoardColumn::SpecReview,
+        })
+        .await
+        .unwrap();
+
+    let direct_move = store
+        .move_board_card("product-launch", BoardColumn::ReadyForBuild)
+        .await
+        .unwrap_err();
+    assert!(direct_move.to_string().contains("board approve-spec"));
+
+    let approved = store
+        .approve_board_spec(
+            "product-launch",
+            "shubham",
+            Some("Looks good; follow the guardrail sk-proj-abc123XYZ456def789GHJ012"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approved.column, BoardColumn::ReadyForBuild);
+
+    let snapshot = store
+        .task_snapshot("product-launch")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.messages.len(), 1);
+    assert_eq!(snapshot.messages[0].channel, "board");
+    assert_eq!(snapshot.messages[0].sender, "shubham");
+    assert_eq!(snapshot.messages[0].direction, MessageDirection::Inbound);
+    assert!(snapshot.messages[0].body.contains("Spec approved"));
+    assert!(!snapshot.messages[0].body.contains("abc123"));
+    assert!(snapshot.messages[0].body.contains("sk-proj-[REDACTED]"));
 }
 
 fn unique_db_path(label: &str) -> std::path::PathBuf {
