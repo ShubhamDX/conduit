@@ -206,6 +206,19 @@ enum BoardCommand {
         #[arg(long)]
         json: bool,
     },
+    ApproveReview {
+        id: String,
+        #[arg(long)]
+        state: Option<PathBuf>,
+        #[arg(long)]
+        workflow: Option<String>,
+        #[arg(long, default_value = "human")]
+        reviewer: String,
+        #[arg(long)]
+        note: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     Assign {
         id: String,
         #[arg(long)]
@@ -615,6 +628,26 @@ async fn handle_board_command(command: BoardCommand) -> Result<()> {
                 .approve_board_spec(&id, &reviewer, note.as_deref())
                 .await
                 .context("approve board spec")?;
+            if json {
+                write_json(&card)
+            } else {
+                print_board_card(&card);
+                Ok(())
+            }
+        }
+        BoardCommand::ApproveReview {
+            id,
+            state,
+            workflow,
+            reviewer,
+            note,
+            json,
+        } => {
+            let store = open_existing_orchestration_store(state, workflow.as_deref())?;
+            let card = store
+                .approve_board_review(&id, &reviewer, note.as_deref())
+                .await
+                .context("approve board review")?;
             if json {
                 write_json(&card)
             } else {

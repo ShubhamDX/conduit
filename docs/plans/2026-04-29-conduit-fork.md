@@ -3535,6 +3535,22 @@ conduit-cli board assign <id> --agent codex --role coder [--model gpt-5.5] [--js
 - [x] Write the final handoff to shared memory by reference.
 - [x] Move completed build/review cards to `human_review`.
 
+### Task 10.6: Final human review gate
+
+**Files:**
+- Modify: `crates/conduit-orchestrator/src/state.rs`
+- Modify: `crates/conduit-orchestrator/tests/state_sqlite.rs`
+- Modify: `crates/conduit-cli/src/main.rs`
+- Modify: `crates/conduit-cli/tests/cli_validate.rs`
+- Modify: `README.md`
+- Modify: `SPEC-EXTENSIONS.md`
+- Modify: `docs/control-plane.md`
+
+- [x] Block direct board moves into `done`.
+- [x] Add `conduit board approve-review <card>` for human-reviewed completion from `human_review`.
+- [x] Persist a redacted board message naming the reviewer and note.
+- [x] Document the final acceptance path for dashboards and Hermes-style control surfaces.
+
 ---
 
 ## Self-Review

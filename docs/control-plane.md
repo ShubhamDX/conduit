@@ -105,4 +105,12 @@ conduit-cli build start \
 
 `build start` requires the card to be in `ready_for_build`. It runs assignments with role `coder`, moves the card through `in_dev`, then runs assignments with role `reviewer` and moves the card to `human_review`. Build and review turns are persisted as redacted ledger events and messages, and the final handoff is written to shared memory as `build:<card>:handoff`.
 
-The build runner does not mark cards `done`; that remains a human release/review decision.
+Cards cannot be moved directly into `done`. After final review, use the guarded review approval command so the ledger records who accepted the work:
+
+```bash
+conduit-cli board approve-review product-launch \
+  --workflow examples/workflow.yaml \
+  --reviewer shubham \
+  --note "Accepted for release" \
+  --json
+```
